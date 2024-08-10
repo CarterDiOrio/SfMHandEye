@@ -5,7 +5,6 @@
 #ifndef INC_GUARD_GRAPH_HPP
 #define INC_GUARD_GRAPH_HPP
 
-#include "chessboardless/bimap.hpp"
 #include "chessboardless/feature_detection.hpp"
 #include <Eigen/Dense>
 #include <concepts>
@@ -15,6 +14,7 @@
 #include <opencv2/core/types.hpp>
 #include <opencv2/features2d.hpp>
 #include <optional>
+#include <set>
 #include <sophus/se3.hpp>
 #include <span>
 #include <unordered_map>
@@ -117,8 +117,20 @@ public:
 
   /// @brief Gets the ids of the points that the frame observes
   /// @param frame_id the id of the frame
-  /// @return a span containing the ids of the pointss
+  /// @return a span containing the ids of the points
   std::span<const size_t> get_frame_points(size_t frame_id) const;
+
+  /// @brief Gets the ids of the frames that observe at least one point in
+  /// common
+  /// @param frame_id the frame to get the neighbors of
+  /// @return a span containing the ids of the frames
+  const std::vector<size_t> &get_covisibility_neighbors(size_t frame_id) const;
+
+  /// @brief Gets the number of shared points between the two frames
+  /// @param frame_id1 the first frame
+  /// @param frame_id2 the second frame
+  /// @return the number of shared observations
+  size_t get_covisibility_count(size_t frame_id1, size_t frame_id2) const;
 
   /// @brief removes an observation of a point. If no observations of the point
   /// remain, the point is removed
@@ -144,10 +156,11 @@ public:
   void remove_frame(size_t frame_id);
 
 private:
-  enum class CovisibilityOperation { Added, Removed };
-
   using adjacency_list = std::unordered_map<size_t, std::vector<size_t>>;
 
+  enum class CovisibilityOperation { Added, Removed };
+
+  /// @brief auto increment ids
   size_t idx_count = 0;
 
   std::unordered_map<size_t, std::unique_ptr<VisualFrame>> frames;
@@ -192,6 +205,17 @@ private:
   std::pair<size_t, size_t> covisibility_pair(size_t frame_id1,
                                               size_t frame_id2) const;
 };
+
+/// @brief Get the neighbors of a frame that meet a covisibility threshold
+/// @param feature_graph the feature graph
+/// @param frame_id the id of the starting frame
+/// @param covisibility_threshold the number of covisibile points required
+/// @param max_depth the depth to limit the search to
+/// @return The frame ids of the frames in the local covisibility graph
+std::set<size_t> covisibility_query(const FeatureGraph &feature_graph,
+                                    size_t frame_id,
+                                    size_t covisibility_threshold,
+                                    size_t max_depth);
 
 } // namespace slam::features
 

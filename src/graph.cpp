@@ -2,9 +2,11 @@
 #include "chessboardless/feature_detection.hpp"
 #include <algorithm>
 #include <assert.h>
+#include <deque>
 #include <limits>
 #include <memory>
 #include <opencv2/core.hpp>
+#include <queue>
 #include <ranges>
 #include <utility>
 
@@ -44,12 +46,12 @@ size_t FeatureGraph::insert_frame(std::unique_ptr<VisualFrame> frame,
 size_t FeatureGraph::insert_observation(size_t frame_id, const Feature &feature,
                                         std::optional<size_t> point_id) {
 
-  assert(!frames.contains(frame_id) &&
+  assert(frames.contains(frame_id) &&
          "TRIED TO INSERT DETECTION FOR FRAME THAT DOES NOT EXIST");
 
   if (point_id.has_value()) {
     const auto pid = point_id.value();
-    assert(!points.contains(pid) &&
+    assert(points.contains(pid) &&
            "TRIED TO lINK AGANIST POINT THAT DOES NOT EXIST");
 
     assert(!edges.contains({frame_id, pid}) &&
@@ -85,22 +87,22 @@ const VisualFrame &FeatureGraph::get_frame(size_t frame_id) {
 
   // higher level book keeping has gone very wrong for this to happen
   // and the program is in an invalid state.
-  assert(!frames.contains(frame_id) &&
+  assert(frames.contains(frame_id) &&
          "QUERIED FEATURE GRAPH FOR FRAME ID THAT DOES NOT EXIST");
   return *frames.at(frame_id);
 }
 
 const Point &FeatureGraph::get_point(size_t point_id) const {
-  assert(!points.contains(point_id) &&
+  assert(points.contains(point_id) &&
          "FEATURE GRAPH QUERIED FOR POINT THAT DOES NOT EXIST");
   return *points.at(point_id);
 }
 
 const ObservationEdge &FeatureGraph::get_observation(size_t frame_id,
                                                      size_t point_id) const {
-  assert(!frames.contains(frame_id) &&
+  assert(frames.contains(frame_id) &&
          "QUERIED FEATURE GRAPH FOR FRAME ID THAT DOES NOTE EXIST");
-  assert(!points.contains(point_id) &&
+  assert(points.contains(point_id) &&
          "FEATURE GRAPH QUERIED FOR POINT THAT DOES NOT EXIST");
   return *edges.at({frame_id, point_id});
 }
@@ -108,11 +110,36 @@ const ObservationEdge &FeatureGraph::get_observation(size_t frame_id,
 std::span<const size_t> FeatureGraph::get_frame_points(size_t frame_id) const {
   // higher level book keeping has gone very wrong for this to happen
   // and the program is in an invalid state.
-  assert(!frames.contains(frame_id) &&
+  assert(frames.contains(frame_id) &&
          "QUERIED FEATURE GRAPH FOR FRAME ID THAT DOES NOTE EXIST");
-  assert(!frame_point_graph.contains(frame_id) &&
+  assert(frame_point_graph.contains(frame_id) &&
          "FEATURE GRAPH ADJ LIST DOES NOT CONTAIN QUERIED FRAME");
   return frame_point_graph.at(frame_id);
+}
+
+const std::vector<size_t> &
+FeatureGraph::get_covisibility_neighbors(size_t frame_id) const {
+  assert(frames.contains(frame_id) &&
+         "Feature Graph: Tried to query covisibility for frame that does not "
+         "exist.");
+  return covisibility_graph.at(frame_id);
+};
+
+size_t FeatureGraph::get_covisibility_count(size_t frame_id1,
+                                            size_t frame_id2) const {
+  assert(frames.contains(frame_id1) &&
+         "Feature Graph: tried to query for frame that does not exist.");
+  assert(frames.contains(frame_id2) &&
+         "Feature Graph: tried to query for frame that does not exist.");
+
+  const auto covisibility_edge =
+      covisibility_edges.find(covisibility_pair(frame_id1, frame_id2));
+
+  if (covisibility_edge == covisibility_edges.end()) {
+    return 0;
+  } else {
+    return covisibility_edge->second;
+  }
 }
 
 bool FeatureGraph::remove_observation(size_t frame_id, size_t point_id) {
@@ -287,6 +314,55 @@ FeatureGraph::covisibility_pair(size_t frame_id1, size_t frame_id2) const {
   } else {
     return {frame_id1, frame_id2};
   }
+}
+
+std::set<size_t> covisibility_query(const FeatureGraph &feature_graph,
+                                    size_t frame_id,
+                                    size_t covisibility_threshold,
+                                    size_t max_depth) {
+
+  // setup BFS queue
+  std::set<size_t> frame_ids{frame_id};
+  std::queue<size_t> frame_queue;
+  frame_queue.push(frame_id);
+
+  const auto add_to_queue = [&frame_queue, &frame_ids](const auto fid) {
+    if (!frame_ids.contains(fid)) {
+      frame_ids.insert(fid);
+      frame_queue.push(fid);
+    }
+  };
+
+  size_t current_depth = 0;
+
+  while (!frame_queue.empty() && current_depth < max_depth) {
+
+    // process current layer
+    for (const auto &remaining [[maybe_unused]] :
+         rv::iota(frame_queue.size())) {
+
+      const auto &id = frame_queue.front();
+
+      // if it isn't the start and we haven't visted it
+      if (id != frame_id && !frame_ids.contains(id)) {
+
+        const auto meets_threshold = [&feature_graph, covisibility_threshold,
+                                      id](const size_t other) {
+          return feature_graph.get_covisibility_count(id, other) >
+                 covisibility_threshold;
+        };
+
+        std::ranges::for_each(feature_graph.get_covisibility_neighbors(id) |
+                                  rv::filter(meets_threshold),
+                              add_to_queue);
+
+        frame_queue.pop();
+      }
+      current_depth++;
+    }
+  }
+
+  return frame_ids;
 }
 
 } // namespace slam::features
