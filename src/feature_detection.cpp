@@ -1,5 +1,6 @@
 #include "chessboardless/feature_detection.hpp"
 #include <algorithm>
+#include <iostream>
 #include <limits>
 #include <opencv2/core/mat.hpp>
 #include <opencv2/core/types.hpp>
@@ -41,7 +42,7 @@ Features adaptive_non_maximal_suppression(const Features &features,
     double min = std::numeric_limits<double>::max();
     for (const auto &stronger : points | rv::take(idx)) {
       if (point.kp.response < 0.9 * stronger.kp.response) {
-        min = std::min(min, cv::norm(point.kp.pt = stronger.kp.pt));
+        min = std::min(min, cv::norm(point.kp.pt - stronger.kp.pt));
       }
     }
     point.radius = min;
@@ -54,6 +55,7 @@ Features adaptive_non_maximal_suppression(const Features &features,
     detection.keypoints.push_back(point.kp);
     detection.descriptors.push_back(features.descriptors.row(point.idx));
   }
+
   return detection;
 }
 

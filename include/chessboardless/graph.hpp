@@ -1,5 +1,6 @@
 ///
-/// @file defines a camera graph for visual structure from motion
+/// @file graph.hpp
+/// @brief defines a feature graph for visual structure from motion
 ///
 
 #ifndef INC_GUARD_GRAPH_HPP
@@ -19,11 +20,11 @@
 #include <span>
 #include <unordered_map>
 
-namespace slam::features {
+namespace slam {
 
 struct ObservationEdge {
   /// @brief the feature detection of the point
-  Feature feature;
+  features::Feature feature;
 };
 
 struct Point {
@@ -46,11 +47,31 @@ struct Point {
   /// @brief multiply this ratio by the detection distance to get the
   /// maximum detection distance
   double max_distance_ratio;
+
+  /// @brief whether or not the point has been triangulated
+  bool has_been_triangulated = false;
+
+  /// @brief the 3d location of the point, only valid if has been triangulated
+  /// is true
+  Eigen::Vector3d location = Eigen::Vector3d::Zero();
+
+  /// @brief Mean viewing direction
+  Eigen::Vector3d viewing_direction = Eigen::Vector3d::Zero();
 };
 
 struct VisualFrame {
+  VisualFrame(const Eigen::Matrix3d &intrinsics) : intrinsics(intrinsics) {}
+  VisualFrame(const Eigen::Matrix3d &intrinsics, const Sophus::SE3d &pose)
+      : intrinsics(intrinsics), has_pose(true), T_world_frame(pose) {}
+
   /// @brief the intrinsics of the camera
   Eigen::Matrix3d intrinsics;
+
+  /// @brief whether or not the frame has a pose
+  bool has_pose = false;
+
+  /// @brief the pose of the camera
+  Sophus::SE3d T_world_frame{Eigen::Matrix4d::Identity()};
 };
 
 /// @brief Models a feature graph between frames.
@@ -80,7 +101,7 @@ struct VisualFrame {
 ///
 /// 2) The edge's value will be the number of shared observations.
 ///
-class FeatureGraph {
+class VisualSlamGraph {
 
 public:
   /// @brief inserts a frame into the graph and returns its id
@@ -96,24 +117,35 @@ public:
   /// @param feature the detected feature
   /// @param point_id a matched point to link to
   /// @return the id of the point representing the feature
-  size_t insert_observation(size_t frame_id, const Feature &feature,
+  size_t insert_observation(size_t frame_id, const features::Feature &feature,
                             std::optional<size_t> point_id = std::nullopt);
 
   /// @brief Gets the frame from the graph
   /// @brief frame_id the id of the frame
   /// @return A const reference to the frame
-  const VisualFrame &get_frame(size_t frame_id);
+  const VisualFrame &get_frame(size_t frame_id) const;
+  VisualFrame &get_frame(size_t frame_id);
 
   /// @brief Gets the point from the graph
   /// @param point_id the id of the point
   /// @return A const reference to the point
   const Point &get_point(size_t point_id) const;
+  Point &get_point(size_t point_id);
+
+  /// @brief Gets the number of points in the graph
+  /// @return the number of points;
+  size_t num_points() const;
 
   /// @brief Gets the edge between the frame and observed point
   /// @param frame_id the id of the frame
   /// @param point_id the id of the point
   const ObservationEdge &get_observation(size_t frame_id,
                                          size_t point_id) const;
+
+  /// @brief Gets ids of the observers of a point
+  /// @param point_id the id of the point
+  /// @return a vector of the ids of the observers
+  const std::vector<size_t> &get_observers(size_t point_id) const;
 
   /// @brief Gets the ids of the points that the frame observes
   /// @param frame_id the id of the frame
@@ -155,13 +187,22 @@ public:
   /// @param the id of the frame to remove
   void remove_frame(size_t frame_id);
 
+  /// @brief consolidates the two points into a single point with the id of the
+  /// first Example Use Case: Two frames were inserted into the graph with their
+  /// individual observed points, then matching was done and shared points need
+  /// to be consolidated.
+  /// @param point_id1 the first point to consolidate
+  /// @param point_id2 the second point to consolidate
+  void merge_points(size_t point_id1, size_t point_id2);
+
 private:
   using adjacency_list = std::unordered_map<size_t, std::vector<size_t>>;
 
   enum class CovisibilityOperation { Added, Removed };
 
   /// @brief auto increment ids
-  size_t idx_count = 0;
+  size_t frame_id_count = 0;
+  size_t point_id_count = 100000;
 
   std::unordered_map<size_t, std::unique_ptr<VisualFrame>> frames;
   std::unordered_map<size_t, std::unique_ptr<Point>> points;
@@ -212,11 +253,34 @@ private:
 /// @param covisibility_threshold the number of covisibile points required
 /// @param max_depth the depth to limit the search to
 /// @return The frame ids of the frames in the local covisibility graph
-std::set<size_t> covisibility_query(const FeatureGraph &feature_graph,
+std::set<size_t> covisibility_query(const VisualSlamGraph &feature_graph,
                                     size_t frame_id,
                                     size_t covisibility_threshold,
                                     size_t max_depth);
 
-} // namespace slam::features
+/// @brief Assembles a keypoint vector and descriptor mat for all of a frame's
+/// observations Was made for easy of use with opencv's matching functions
+/// @param feature_graph the feature graph containing the frame
+/// @param frame_id the id of the frame
+/// @return a pair of the keypoints and a mat of the descriptors
+std::pair<std::vector<cv::KeyPoint>, cv::Mat>
+get_frame_keypoints(const VisualSlamGraph &feature_graph, size_t frame_id);
+
+/// @brief Gets all the key point measurements of a point from the given frames
+/// @param graph the graph containing the point
+/// @param frame_ids the ids of the observing frames
+/// @param point id the id of the point
+std::vector<cv::KeyPoint>
+get_all_measurements(const VisualSlamGraph &graph,
+                     std::span<size_t const> frame_ids, size_t point_id);
+
+/// @brief Gets the shared points between two frames
+/// @param graph the graph containing the frames
+/// @param frame_id1 the id of the first frame
+/// @param frame_id2 the id of the second frame
+std::vector<size_t> get_shared_points(const VisualSlamGraph &graph,
+                                      size_t frame_id1, size_t frame_id2);
+
+} // namespace slam
 
 #endif

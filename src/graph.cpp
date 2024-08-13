@@ -3,19 +3,22 @@
 #include <algorithm>
 #include <assert.h>
 #include <deque>
+#include <iostream>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <opencv2/core.hpp>
+#include <opencv2/core/types.hpp>
 #include <queue>
 #include <ranges>
 #include <utility>
 
 namespace rv = std::ranges::views;
 
-namespace slam::features {
+namespace slam {
 
-size_t FeatureGraph::insert_frame(std::unique_ptr<VisualFrame> frame,
-                                  std::optional<size_t> id) {
+size_t VisualSlamGraph::insert_frame(std::unique_ptr<VisualFrame> frame,
+                                     std::optional<size_t> id) {
   if (id.has_value()) {
     const auto fid = id.value();
 
@@ -24,11 +27,11 @@ size_t FeatureGraph::insert_frame(std::unique_ptr<VisualFrame> frame,
     assert(!frames.contains(fid) &&
            "Feature Graph TRIED INSERT WITH FRAME ID THAT ALREADY EXISTS");
 
-    if (idx_count < fid) {
+    if (frame_id_count < fid) {
       // update the count to not cause collisions if an automatic id frame is
       // inserted. yes this could be abused by setting fid very high for no
       // reason.
-      idx_count = fid + 1;
+      frame_id_count = fid + 1;
     }
 
     frames.insert({fid, std::move(frame)});
@@ -36,15 +39,16 @@ size_t FeatureGraph::insert_frame(std::unique_ptr<VisualFrame> frame,
     covisibility_graph.insert({fid, {}});
     return fid;
   } else {
-    frames.insert({++idx_count, std::move(frame)});
-    frame_point_graph.insert({idx_count, {}});
-    covisibility_graph.insert({idx_count, {}});
-    return idx_count;
+    frames.insert({++frame_id_count, std::move(frame)});
+    frame_point_graph.insert({frame_id_count, {}});
+    covisibility_graph.insert({frame_id_count, {}});
+    return frame_id_count;
   }
 };
 
-size_t FeatureGraph::insert_observation(size_t frame_id, const Feature &feature,
-                                        std::optional<size_t> point_id) {
+size_t VisualSlamGraph::insert_observation(size_t frame_id,
+                                           const features::Feature &feature,
+                                           std::optional<size_t> point_id) {
 
   assert(frames.contains(frame_id) &&
          "TRIED TO INSERT DETECTION FOR FRAME THAT DOES NOT EXIST");
@@ -67,7 +71,7 @@ size_t FeatureGraph::insert_observation(size_t frame_id, const Feature &feature,
 
     return pid;
   } else {
-    const auto pid = ++idx_count;
+    const auto pid = ++point_id_count;
 
     points.insert(
         {pid, std::make_unique<Point>(frame_id, feature.descriptor,
@@ -75,7 +79,8 @@ size_t FeatureGraph::insert_observation(size_t frame_id, const Feature &feature,
                                       calculate_min_distance_ratio(feature),
                                       calculate_max_distance_ratio(feature))});
 
-    frame_point_graph.insert({pid, {}});
+    frame_point_graph.insert({pid, {frame_id}});
+    frame_point_graph.at(frame_id).push_back(pid);
     edges.insert({std::make_pair(frame_id, pid),
                   std::make_unique<ObservationEdge>(feature)});
 
@@ -83,7 +88,7 @@ size_t FeatureGraph::insert_observation(size_t frame_id, const Feature &feature,
   }
 };
 
-const VisualFrame &FeatureGraph::get_frame(size_t frame_id) {
+const VisualFrame &VisualSlamGraph::get_frame(size_t frame_id) const {
 
   // higher level book keeping has gone very wrong for this to happen
   // and the program is in an invalid state.
@@ -92,14 +97,30 @@ const VisualFrame &FeatureGraph::get_frame(size_t frame_id) {
   return *frames.at(frame_id);
 }
 
-const Point &FeatureGraph::get_point(size_t point_id) const {
+VisualFrame &VisualSlamGraph::get_frame(size_t frame_id) {
+
+  // higher level book keeping has gone very wrong for this to happen
+  // and the program is in an invalid state.
+  assert(frames.contains(frame_id) &&
+         "QUERIED FEATURE GRAPH FOR FRAME ID THAT DOES NOT EXIST");
+  return *frames.at(frame_id);
+}
+
+const Point &VisualSlamGraph::get_point(size_t point_id) const {
   assert(points.contains(point_id) &&
          "FEATURE GRAPH QUERIED FOR POINT THAT DOES NOT EXIST");
   return *points.at(point_id);
 }
 
-const ObservationEdge &FeatureGraph::get_observation(size_t frame_id,
-                                                     size_t point_id) const {
+Point &VisualSlamGraph::get_point(size_t point_id) {
+  assert(points.contains(point_id) && "Graph: Does not contain point");
+  return *points.at(point_id);
+}
+
+size_t VisualSlamGraph::num_points() const { return points.size(); }
+
+const ObservationEdge &VisualSlamGraph::get_observation(size_t frame_id,
+                                                        size_t point_id) const {
   assert(frames.contains(frame_id) &&
          "QUERIED FEATURE GRAPH FOR FRAME ID THAT DOES NOTE EXIST");
   assert(points.contains(point_id) &&
@@ -107,7 +128,14 @@ const ObservationEdge &FeatureGraph::get_observation(size_t frame_id,
   return *edges.at({frame_id, point_id});
 }
 
-std::span<const size_t> FeatureGraph::get_frame_points(size_t frame_id) const {
+const std::vector<size_t> &
+VisualSlamGraph::get_observers(size_t point_id) const {
+  assert(points.contains(point_id) && "Graph: does not contain point");
+  return frame_point_graph.at(point_id);
+}
+
+std::span<const size_t>
+VisualSlamGraph::get_frame_points(size_t frame_id) const {
   // higher level book keeping has gone very wrong for this to happen
   // and the program is in an invalid state.
   assert(frames.contains(frame_id) &&
@@ -118,15 +146,15 @@ std::span<const size_t> FeatureGraph::get_frame_points(size_t frame_id) const {
 }
 
 const std::vector<size_t> &
-FeatureGraph::get_covisibility_neighbors(size_t frame_id) const {
+VisualSlamGraph::get_covisibility_neighbors(size_t frame_id) const {
   assert(frames.contains(frame_id) &&
          "Feature Graph: Tried to query covisibility for frame that does not "
          "exist.");
   return covisibility_graph.at(frame_id);
 };
 
-size_t FeatureGraph::get_covisibility_count(size_t frame_id1,
-                                            size_t frame_id2) const {
+size_t VisualSlamGraph::get_covisibility_count(size_t frame_id1,
+                                               size_t frame_id2) const {
   assert(frames.contains(frame_id1) &&
          "Feature Graph: tried to query for frame that does not exist.");
   assert(frames.contains(frame_id2) &&
@@ -142,9 +170,10 @@ size_t FeatureGraph::get_covisibility_count(size_t frame_id1,
   }
 }
 
-bool FeatureGraph::remove_observation(size_t frame_id, size_t point_id) {
+bool VisualSlamGraph::remove_observation(size_t frame_id, size_t point_id) {
   assert(!points.contains(point_id) &&
-         "Feature Graph: Tried to observation from point that does not exist");
+         "Feature Graph: Tried to remove observation from point that does not "
+         "exist");
 
   assert(!frames.contains(frame_id) &&
          "Feature Graph: Tried to remove an observation from a frame that does "
@@ -163,18 +192,19 @@ bool FeatureGraph::remove_observation(size_t frame_id, size_t point_id) {
   }
 }
 
-bool FeatureGraph::remove_observations(std::span<const size_t> frame_ids,
-                                       size_t point_id) {
-  assert(!points.contains(point_id) &&
-         "Feature Graph: Tried to observation from point that does not exist");
+bool VisualSlamGraph::remove_observations(std::span<const size_t> frame_ids,
+                                          size_t point_id) {
+  assert(points.contains(point_id) &&
+         "Feature Graph: Tried to remove observation from point that does not "
+         "exist");
 
   for (const auto &frame_id : frame_ids) {
     assert(
-        !frames.contains(frame_id) &&
+        frames.contains(frame_id) &&
         "Feature Graph: Tried to remove an observation from a frame that does "
         "not exist");
 
-    assert(!edges.contains({frame_id, point_id}) &&
+    assert(edges.contains({frame_id, point_id}) &&
            "Feature Graph: Tried to remove edge that does not exist");
 
     unsafe_remove_observation(frame_id, point_id, false);
@@ -186,6 +216,7 @@ bool FeatureGraph::remove_observations(std::span<const size_t> frame_ids,
 
   if (frame_point_graph.at(point_id).empty()) {
     frame_point_graph.erase(point_id);
+    points.erase(point_id);
     return true;
   } else {
     // maintain invariance
@@ -194,7 +225,7 @@ bool FeatureGraph::remove_observations(std::span<const size_t> frame_ids,
   }
 }
 
-void FeatureGraph::remove_point(size_t point_id) {
+void VisualSlamGraph::remove_point(size_t point_id) {
   assert(points.contains(point_id) &&
          "FEATURE GRAPH: TRIED TO REMOVE POINT THAT HAS ALREADY BEEN REMOVED");
 
@@ -202,11 +233,11 @@ void FeatureGraph::remove_point(size_t point_id) {
   const bool point_removed =
       remove_observations(frame_point_graph.at(point_id), point_id);
   assert(
-      !point_removed &&
+      point_removed &&
       "Feature Graph: point should be removed after all observations removed.");
 }
 
-void FeatureGraph::remove_frame(size_t frame_id) {
+void VisualSlamGraph::remove_frame(size_t frame_id) {
   assert(frames.contains(frame_id) &&
          "Feature Graph: cannot remove frame that is not in graph.");
 
@@ -218,7 +249,45 @@ void FeatureGraph::remove_frame(size_t frame_id) {
   frame_point_graph.erase(frame_id);
 }
 
-void FeatureGraph::update_point(size_t point_id) {
+void VisualSlamGraph::merge_points(size_t point_id1, size_t point_id2) {
+  // we will be merging into point1, so find all the frames that observe point 2
+  // but not 1
+  const auto frames1 = get_observers(point_id1);
+  std::set<size_t> old_frames;
+  old_frames.insert(frames1.cbegin(), frames1.cend());
+
+  std::vector<size_t> new_frames;
+  for (const auto &frame_id : get_observers(point_id2)) {
+    if (!old_frames.contains(frame_id)) {
+      new_frames.push_back(frame_id);
+    }
+  }
+
+  // get all the edges that will be lost
+  std::vector<std::unique_ptr<ObservationEdge>> edges_to_merge;
+  for (const auto &frame_id : new_frames) {
+    edges_to_merge.push_back(std::move(edges.at({frame_id, point_id2})));
+  }
+
+  // remove point2
+  remove_point(point_id2);
+
+  // insert observations onto point 1
+  for (const auto &[frame_id, edge] : rv::zip(new_frames, edges_to_merge)) {
+    edges.insert({std::make_pair(frame_id, point_id1), std::move(edge)});
+
+    std::erase(frame_point_graph.at(frame_id), point_id2);
+    frame_point_graph.at(frame_id).push_back(point_id1);
+    frame_point_graph.at(point_id1).push_back(frame_id);
+
+    update_covisilbity_graph(frame_id, point_id1, CovisibilityOperation::Added);
+  }
+
+  // maintain point invariance
+  update_point(point_id1);
+}
+
+void VisualSlamGraph::update_point(size_t point_id) {
 
   auto &point = *points.at(point_id);
   const auto &frame_ids = frame_point_graph.at(point_id);
@@ -248,12 +317,13 @@ void FeatureGraph::update_point(size_t point_id) {
   point.max_distance_ratio = calculate_max_distance_ratio(observation.feature);
 }
 
-void FeatureGraph::update_covisilbity_graph(size_t frame_id, size_t point_id,
-                                            CovisibilityOperation operation) {
+void VisualSlamGraph::update_covisilbity_graph(
+    size_t frame_id, size_t point_id, CovisibilityOperation operation) {
 
   assert(frames.contains(frame_id) && "Feature Graph: Does not contain frame");
   assert(points.contains(point_id) && "Feature Graph: Does not contain point");
-  assert(edges.contains({frame_id, point_id}) &&
+  assert((operation == CovisibilityOperation::Removed ||
+          edges.contains({frame_id, point_id})) &&
          "Feature Graph: No edge between frame and point");
 
   // find all the frames that observe the point
@@ -291,8 +361,9 @@ void FeatureGraph::update_covisilbity_graph(size_t frame_id, size_t point_id,
   }
 }
 
-bool FeatureGraph::unsafe_remove_observation(size_t frame_id, size_t point_id,
-                                             bool remove_point) {
+bool VisualSlamGraph::unsafe_remove_observation(size_t frame_id,
+                                                size_t point_id,
+                                                bool remove_point) {
   // erase the connection between the point and frame
   std::erase(frame_point_graph.at(frame_id), point_id);
   std::erase(frame_point_graph.at(point_id), frame_id);
@@ -301,6 +372,7 @@ bool FeatureGraph::unsafe_remove_observation(size_t frame_id, size_t point_id,
   if (remove_point && frame_point_graph.at(point_id).empty()) {
     // point has nothing observing it, remove
     frame_point_graph.erase(point_id);
+    points.erase(point_id);
     return true;
   } else {
     return false;
@@ -308,7 +380,7 @@ bool FeatureGraph::unsafe_remove_observation(size_t frame_id, size_t point_id,
 }
 
 std::pair<size_t, size_t>
-FeatureGraph::covisibility_pair(size_t frame_id1, size_t frame_id2) const {
+VisualSlamGraph::covisibility_pair(size_t frame_id1, size_t frame_id2) const {
   if (frame_id1 > frame_id2) {
     return {frame_id2, frame_id1};
   } else {
@@ -316,7 +388,7 @@ FeatureGraph::covisibility_pair(size_t frame_id1, size_t frame_id2) const {
   }
 }
 
-std::set<size_t> covisibility_query(const FeatureGraph &feature_graph,
+std::set<size_t> covisibility_query(const VisualSlamGraph &feature_graph,
                                     size_t frame_id,
                                     size_t covisibility_threshold,
                                     size_t max_depth) {
@@ -365,4 +437,48 @@ std::set<size_t> covisibility_query(const FeatureGraph &feature_graph,
   return frame_ids;
 }
 
-} // namespace slam::features
+std::pair<std::vector<cv::KeyPoint>, cv::Mat>
+get_frame_keypoints(const VisualSlamGraph &feature_graph, size_t frame_id) {
+  const auto &point_ids = feature_graph.get_frame_points(frame_id);
+
+  std::cout << point_ids.size() << std::endl;
+
+  std::vector<cv::KeyPoint> keypoints;
+  cv::Mat descriptors;
+
+  for (const auto &pid : point_ids) {
+    const auto &feature = feature_graph.get_observation(frame_id, pid).feature;
+    keypoints.push_back(feature.keypoint);
+    descriptors.push_back(feature.descriptor);
+  }
+
+  return {keypoints, descriptors};
+}
+
+std::vector<cv::KeyPoint>
+get_all_measurements(const VisualSlamGraph &graph,
+                     std::span<size_t const> frame_ids, size_t point_id) {
+  std::vector<cv::KeyPoint> key_points;
+  for (const auto &frame_id : frame_ids) {
+    key_points.push_back(
+        graph.get_observation(frame_id, point_id).feature.keypoint);
+  }
+  return key_points;
+}
+
+std::vector<size_t> get_shared_points(const VisualSlamGraph &graph,
+                                      size_t frame_id1, size_t frame_id2) {
+  const auto &frame1_points = graph.get_frame_points(frame_id1);
+  const auto &frame2_points = graph.get_frame_points(frame_id2);
+
+  std::set<size_t> points1(frame1_points.cbegin(), frame1_points.cend());
+  std::set<size_t> points2(frame2_points.cbegin(), frame2_points.cend());
+
+  std::vector<size_t> shared_points;
+  std::set_intersection(points1.cbegin(), points1.cend(), points2.cbegin(),
+                        points2.cend(), std::back_inserter(shared_points));
+
+  return shared_points;
+}
+
+} // namespace slam
