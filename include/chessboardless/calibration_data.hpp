@@ -5,11 +5,14 @@
 #include <memory>
 #include <nlohmann/detail/macro_scope.hpp>
 #include <nlohmann/json.hpp>
+#include <openMVG/cameras/Camera_Intrinsics.hpp>
 #include <openMVG/features/image_describer.hpp>
 #include <openMVG/features/regions.hpp>
 #include <openMVG/image/image_container.hpp>
 #include <openMVG/image/pixel_types.hpp>
 #include <openMVG/matching/indMatch.hpp>
+#include <openMVG/sfm/sfm_data.hpp>
+#include <openMVG/sfm/sfm_view.hpp>
 #include <opencv2/core.hpp>
 #include <sophus/se3.hpp>
 #include <string_view>
@@ -55,18 +58,15 @@ struct CameraGroup {
   std::vector<Sophus::SE3d> camera_poses;
 };
 
-struct Camera {
-  /// @brief the id of the camera
-  size_t id;
+struct Camera : public openMVG::sfm::View {
+public:
+  Camera() : openMVG::sfm::View() {}
 
   /// @brief the id of the camera's group
   size_t group_id;
 
   /// @brief the camera's image
   Image image;
-
-  /// @brief the image filepath
-  std::string image_path;
 
   /// @brief pose of the camera relative to the mean of the group
   Sophus::SE3d pose;
@@ -78,34 +78,13 @@ struct Camera {
 /// @brief a collection of camera groups
 struct CameraSet {
 
-  std::vector<Camera> cameras;
+  std::vector<std::shared_ptr<Camera>> cameras;
 
   /// @brief image id to group id
   std::unordered_map<size_t, size_t> image_to_group;
 
   /// @brief group id to image ids
   std::unordered_map<size_t, std::vector<size_t>> group_to_images;
-};
-
-/// @brief interface for a region provider
-class RegionProvider {
-public:
-  virtual openMVG::features::Regions &get_region(size_t idx) = 0;
-};
-
-/// @brief keeps all the regions in memory
-class MemoryRegionProvider : RegionProvider {
-  virtual openMVG::features::Regions &get_region(size_t idx) = 0;
-
-private:
-  std::vector<std::unique_ptr<openMVG::features::Regions>> features;
-};
-
-/// @brief caches the last requested regions in memory and stores the others on
-/// disk
-class CachedRegionProvider {
-  /// @brief the directory containing the features
-  CachedRegionProvider(std::filesystem::path directory);
 };
 
 /// @brief handles loading and storing any data in the pipeline
@@ -123,10 +102,16 @@ public:
   static std::filesystem::path
   validate_data_directory(const std::string_view &data_directory);
 
+  /// @brief Gets the intrinsics of the camera
+  /// @return camera intrinsics
+  std::shared_ptr<openMVG::cameras::IntrinsicBase> get_intrinsics() const;
+
   /// @brief loads the cameras data
   /// @return a camera set containing the camera data
   CameraSet &load_cameras();
 
+  /// @brief Gets the set of cameras
+  /// @return a reference to the set of camera dat
   CameraSet &get_cameras();
 
   /// @brief checks if the data directory has detected featuers
@@ -142,14 +127,38 @@ public:
   std::vector<RegionsPtr>
   load_features(const openMVG::features::Image_describer &describer);
 
-  bool has_matches() const;
+  /// @brief saves the matches
+  /// @param matches the pairwise matches to save
+  /// @param filtered raw or filtered matches
+  void store_matches(const openMVG::matching::PairWiseMatches &matches,
+                     bool raw = true);
 
-  // void store_matches(const openMVG::matches::IndMatches);
+  /// @brief loads the matches if they exists from the disk
+  /// @param raw raw or filtered matches
+  std::optional<openMVG::matching::PairWiseMatches>
+  load_matches(bool raw = true);
+
+  inline std::filesystem::path get_data_directory() { return data_directory; }
+  inline std::filesystem::path get_feature_directory() {
+    return feature_directory;
+  }
+  inline std::filesystem::path get_matches_directory() {
+    return matches_directory;
+  }
 
 private:
-  const std::filesystem::path data_directory;
-  const std::filesystem::path feature_directory;
+  std::filesystem::path data_directory;
+  std::filesystem::path feature_directory;
+  std::filesystem::path matches_directory;
   CameraSet camera_set;
 };
+
+/// @brief converts cameras to sfm data where the ids are aligned with those in
+/// the camera set
+/// @param cameras the camera set to create the SfM data from
+/// @param intrinsics the intrinsic values to use for the cameras
+openMVG::sfm::SfM_Data cameras_to_sfm_data(
+    const CameraSet &cameras,
+    std::shared_ptr<openMVG::cameras::IntrinsicBase> intrinsics);
 
 #endif

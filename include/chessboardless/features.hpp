@@ -9,6 +9,7 @@
 #include <concepts>
 #include <execution>
 #include <format>
+#include <image/image_io.hpp>
 #include <memory.h>
 #include <memory>
 #include <openMVG/features/image_describer.hpp>
@@ -19,7 +20,12 @@
 #include <openMVG/matching/matcher_cascade_hashing.hpp>
 #include <openMVG/matching/matcher_type.hpp>
 #include <openMVG/matching/regions_matcher.hpp>
+#include <openMVG/matching_image_collection/Matcher.hpp>
+#include <openMVG/matching_image_collection/Matcher_Regions.hpp>
+#include <openMVG/sfm/pipelines/sfm_regions_provider.hpp>
+#include <openMVG/sfm/pipelines/sfm_regions_provider_cache.hpp>
 #include <openMVG/system/loggerprogress.hpp>
+#include <sfm/sfm_data.hpp>
 #include <string_view>
 
 /// @brief creates and returns an image describer
@@ -44,7 +50,7 @@ create_image_describer(const std::string_view type, Params &&...args) {
 template <typename T>
 std::vector<std::unique_ptr<openMVG::features::Regions>>
 describe_images(openMVG::features::Image_describer &describer,
-                std::vector<openMVG::image::Image<T>> images, int workers = 1) {
+                std::vector<openMVG::image::Image<T>> images) {
 
   std::cout << "Extracting Features: " << std::endl;
 
@@ -80,7 +86,9 @@ std::vector<std::unique_ptr<openMVG::features::Regions>>
 describe_images(openMVG::features::Image_describer &describer,
                 const CameraSet &camera_set);
 
-openMVG::matching::IndMatches match_pairs(
-    const std::vector<std::unique_ptr<openMVG::features::Regions>> &regions);
+openMVG::matching::PairWiseMatches
+match_pairs(const openMVG::matching_image_collection::Matcher &matcher,
+            const openMVG::sfm::SfM_Data &sfm_data,
+            std::shared_ptr<openMVG::sfm::Regions_Provider> region_provider);
 
 #endif
