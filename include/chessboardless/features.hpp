@@ -25,6 +25,7 @@
 #include <openMVG/sfm/pipelines/sfm_regions_provider.hpp>
 #include <openMVG/sfm/pipelines/sfm_regions_provider_cache.hpp>
 #include <openMVG/system/loggerprogress.hpp>
+#include <openMVG/tracks/tracks.hpp>
 #include <sfm/sfm_data.hpp>
 #include <string_view>
 
@@ -86,9 +87,26 @@ std::vector<std::unique_ptr<openMVG::features::Regions>>
 describe_images(openMVG::features::Image_describer &describer,
                 const CameraSet &camera_set);
 
+/// @brief finds matches between all image pairs
+/// @param matcher the collection matcher to use
+/// @param sfm_data the sfm data structure containing meta data
+/// @param region_provider the region provider
 openMVG::matching::PairWiseMatches
 match_pairs(const openMVG::matching_image_collection::Matcher &matcher,
             const openMVG::sfm::SfM_Data &sfm_data,
             std::shared_ptr<openMVG::sfm::Regions_Provider> region_provider);
+
+/// @brief filters matches using robust essential matrix estimation
+/// @param sfm_data the sfm data
+/// @param regions_provider provides the regions
+/// @param matches the pairwise matches to filter
+openMVG::matching::PairWiseMatches filter_matches(
+    const openMVG::sfm::SfM_Data &sfm_data,
+    const std::shared_ptr<openMVG::sfm::Regions_Provider> regions_provider,
+    const openMVG::matching::PairWiseMatches &matches);
+
+/// @brief creates feature tracks from the pairwise matches
+openMVG::tracks::STLMAPTracks
+create_feature_tracks(const openMVG::matching::PairWiseMatches &matches);
 
 #endif

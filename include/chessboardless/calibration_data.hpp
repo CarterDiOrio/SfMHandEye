@@ -1,6 +1,7 @@
 #ifndef INC_GUARD_CALIBRATION_DATA_HPP
 #define INC_GUARD_CALIBRATION_DATA_HPP
 
+#include <cereal/cereal.hpp>
 #include <cstddef>
 #include <memory>
 #include <nlohmann/detail/macro_scope.hpp>
@@ -127,6 +128,9 @@ public:
   std::vector<RegionsPtr>
   load_features(const openMVG::features::Image_describer &describer);
 
+  /// @brief gets the filesystem path to a matches file
+  std::filesystem::path get_matches_path(bool raw = true);
+
   /// @brief saves the matches
   /// @param matches the pairwise matches to save
   /// @param filtered raw or filtered matches
@@ -160,5 +164,9 @@ private:
 openMVG::sfm::SfM_Data cameras_to_sfm_data(
     const CameraSet &cameras,
     std::shared_ptr<openMVG::cameras::IntrinsicBase> intrinsics);
+
+openMVG::sfm::SfM_Data
+group_to_sfm_data(const CameraSet &cameras, size_t group_id,
+                  std::shared_ptr<openMVG::cameras::IntrinsicBase> intrinsics);
 
 #endif

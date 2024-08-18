@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <geometry/pose3.hpp>
 #include <iostream>
 #include <matching/indMatch.hpp>
 #include <matching/indMatch_utils.hpp>
@@ -194,6 +195,11 @@ std::vector<RegionsPtr> CalibrationData::load_features(
   return regions;
 }
 
+std::filesystem::path CalibrationData::get_matches_path(bool raw) {
+  return matches_directory /
+         std::format("matches_{}.txt", (raw) ? "raw" : "filtered");
+}
+
 void CalibrationData::store_matches(
     const openMVG::matching::PairWiseMatches &matches, bool raw) {
   std::filesystem::create_directory(matches_directory);
@@ -226,10 +232,40 @@ openMVG::sfm::SfM_Data cameras_to_sfm_data(
   openMVG::sfm::SfM_Data sfm_data;
   sfm_data.intrinsics[0] = intrinsics;
 
+  size_t pose_id = 0;
   for (const auto &camera : cameras.cameras) {
     camera->id_intrinsic = 0;
     sfm_data.views[camera->id_view] = camera;
+    sfm_data.poses[pose_id] = openMVG::geometry::Pose3();
+    camera->id_pose = pose_id;
+    pose_id++;
   }
 
   return sfm_data;
+}
+
+openMVG::sfm::SfM_Data
+group_to_sfm_data(const CameraSet &cameras, size_t group_id,
+                  std::shared_ptr<openMVG::cameras::IntrinsicBase> intrinsics) {
+  const auto &camera_ids = cameras.group_to_images.at(group_id);
+
+  std::cout << "creating subset" << std::endl;
+
+  openMVG::sfm::SfM_Data subset;
+  subset.intrinsics[0] = intrinsics;
+
+  size_t pose_id = 0;
+  for (auto &view_id : camera_ids) {
+    auto &camera = cameras.cameras.at(view_id);
+    camera->id_intrinsic = 0;
+    subset.poses[pose_id] = openMVG::geometry::Pose3(
+        camera->pose.rotationMatrix(), camera->pose.translation());
+    camera->id_pose = pose_id;
+    subset.views[camera->id_view] = camera;
+    pose_id++;
+  };
+
+  std::cout << "finished creating subset" << std::endl;
+
+  return subset;
 }
