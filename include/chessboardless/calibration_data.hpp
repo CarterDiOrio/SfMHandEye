@@ -15,8 +15,10 @@
 #include <openMVG/sfm/sfm_data.hpp>
 #include <openMVG/sfm/sfm_view.hpp>
 #include <opencv2/core.hpp>
+#include <sfm/pipelines/sfm_regions_provider.hpp>
 #include <sophus/se3.hpp>
 #include <string_view>
+#include <tracks/tracks.hpp>
 #include <unordered_map>
 #include <vector>
 
@@ -168,5 +170,38 @@ openMVG::sfm::SfM_Data cameras_to_sfm_data(
 openMVG::sfm::SfM_Data
 group_to_sfm_data(const CameraSet &cameras, size_t group_id,
                   std::shared_ptr<openMVG::cameras::IntrinsicBase> intrinsics);
+
+/// @brief Creates an sfm data instance with all of the cameras and landmarks
+/// filled out
+/// @param cameras the set of cameras
+/// @param tracks all the feature tracks
+openMVG::sfm::SfM_Data create_sfm_data(
+    const CameraSet &cameras,
+    std::shared_ptr<openMVG::cameras::IntrinsicBase> intrinsics,
+    std::shared_ptr<openMVG::sfm::Regions_Provider> regions_provider,
+    const openMVG::tracks::STLMAPTracks &tracks);
+
+/// @brief Creates a new sfm data with only the data from the cameras in the
+/// passed groups
+/// @param cameras the set of cameras
+/// @param sfm_data the sfm data to create the copy from
+/// @param groups the group ids that contain the wanted cameras
+/// @return a sfm_data object with only views from the given groups
+openMVG::sfm::SfM_Data project_to_groups(const CameraSet &cameras,
+                                         const openMVG::sfm::SfM_Data &sfm_data,
+                                         std::vector<size_t> groups);
+
+/// @brief updates the sfm_data with a projections data
+/// @param sfm_data the sfm_data object to consolidate the changes into
+/// @param projection a projection of the sfm_data object to consolidate the
+/// changes into
+void update_sfm_data(openMVG::sfm::SfM_Data &sfm_data,
+                     const openMVG::sfm::SfM_Data &projection);
+
+/// @brief Initializes the poses with each camera's relative pose
+/// @param camera_set the camera set to pull the poses from
+/// @param sfm_data the sfm_data to initialize the poses for
+void initialize_poses_from_group(const CameraSet &camera_set,
+                                 openMVG::sfm::SfM_Data &sfm_data);
 
 #endif

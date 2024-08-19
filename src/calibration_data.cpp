@@ -1,7 +1,9 @@
 #include "chessboardless/calibration_data.hpp"
 
 #include <Eigen/Dense>
+#include <Eigen/src/Core/Matrix.h>
 #include <Eigen/src/Geometry/AngleAxis.h>
+#include <Eigen/src/Geometry/Quaternion.h>
 #include <algorithm>
 #include <cameras/Camera_Intrinsics.hpp>
 #include <execution>
@@ -19,12 +21,15 @@
 #include <openMVG/system/loggerprogress.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <optional>
-#include <ranges>
+#include <sfm/pipelines/sfm_regions_provider.hpp>
 #include <sfm/sfm_data.hpp>
+#include <sfm/sfm_landmark.hpp>
 #include <sophus/average.hpp>
 #include <stdexcept>
+#include <tracks/tracks.hpp>
 
 static constexpr double deg2rad = M_PI / 180;
+static const Eigen::AngleAxisd z90{-90.0 * deg2rad, Eigen::Vector3d::UnitZ()};
 
 CalibrationData::CalibrationData(const std::string_view &data_path)
     : data_directory{CalibrationData::validate_data_directory(data_path)} {
@@ -85,6 +90,9 @@ CameraSet &CalibrationData::load_cameras() {
       }
       openMVG::image::ReadImage(image_filepath.c_str(), &cameras[idx]->image);
 
+      // std::cout << std::format("{} {} {}\n", camera_json.pose[3],
+      //                          camera_json.pose[4], camera_json.pose[5]);
+
       const Eigen::AngleAxisd x_rot{camera_json.pose[3] * deg2rad,
                                     Eigen::Vector3d::UnitX()};
 
@@ -94,7 +102,8 @@ CameraSet &CalibrationData::load_cameras() {
       const Eigen::AngleAxisd z_rot{camera_json.pose[5] * deg2rad,
                                     Eigen::Vector3d::UnitZ()};
 
-      const Sophus::SO3d rotation{(z_rot * y_rot * x_rot).toRotationMatrix()};
+      const Sophus::SO3d rotation{(x_rot * y_rot * z_rot).toRotationMatrix()};
+
       const Eigen::Vector3d translation{
           camera_json.pose[0], camera_json.pose[1], camera_json.pose[2]};
       const Sophus::SE3d T_base_hand{rotation, translation};
@@ -110,17 +119,23 @@ CameraSet &CalibrationData::load_cameras() {
       camera_set.group_to_images[group_id].push_back(cameras[idx]->id_view);
     }
 
+    const Sophus::SE3d T_hand_camera =
+        Sophus::SE3d{z90.matrix(), Eigen::Vector3d::Zero()};
+
     // get the mean hand pose of the group
-    std::vector<Sophus::SE3d> hand_poses;
+    std::vector<Sophus::SE3d> camera_poses;
     for (const auto &camera : cameras) {
-      hand_poses.push_back(camera->T_base_hand);
+      camera_poses.push_back(camera->T_base_hand * T_hand_camera);
     };
 
-    Sophus::SE3d T_base_hand = *Sophus::average(hand_poses);
+    Sophus::SE3d T_base_camerap = *Sophus::average(camera_poses);
 
     // add camera poses relative to the mean transform
     for (auto &camera : cameras) {
-      camera->pose = T_base_hand.inverse() * camera->T_base_hand;
+      camera->pose =
+          T_base_camerap.inverse() * camera->T_base_hand * T_hand_camera;
+
+      std::cout << camera->pose.matrix() << std::endl;
     }
 
     // add cameras to camera set
@@ -268,4 +283,107 @@ group_to_sfm_data(const CameraSet &cameras, size_t group_id,
   std::cout << "finished creating subset" << std::endl;
 
   return subset;
+}
+
+openMVG::sfm::SfM_Data create_sfm_data(
+    const CameraSet &cameras,
+    std::shared_ptr<openMVG::cameras::IntrinsicBase> intrinsics,
+    std::shared_ptr<openMVG::sfm::Regions_Provider> regions_provider,
+    const openMVG::tracks::STLMAPTracks &tracks) {
+  openMVG::sfm::SfM_Data sfm_data;
+  sfm_data.intrinsics[0] = intrinsics;
+
+  // add all the cameras
+  size_t pose_id = 0;
+  for (const auto &camera : cameras.cameras) {
+    camera->id_intrinsic = 0;
+    sfm_data.views[camera->id_view] = camera;
+    sfm_data.poses[pose_id] = openMVG::geometry::Pose3();
+    camera->id_pose = pose_id;
+    pose_id++;
+  }
+
+  // add all the track information
+  auto &structure = sfm_data.structure;
+  int idx(0);
+  for (const auto &tracks_it : tracks) {
+    structure[idx] = {};
+    auto &obs = structure.at(idx).obs;
+    for (const auto &track_it : tracks_it.second) {
+      const auto imaIndex = track_it.first;
+      const auto featIndex = track_it.second;
+      const auto &pt =
+          regions_provider->get(imaIndex)->GetRegionPosition(featIndex);
+      obs[imaIndex] = {pt, featIndex};
+    }
+
+    if (obs.empty()) {
+      structure.erase(idx);
+    }
+
+    ++idx;
+  }
+
+  return sfm_data;
+}
+
+openMVG::sfm::SfM_Data project_to_groups(const CameraSet &cameras,
+                                         const openMVG::sfm::SfM_Data &sfm_data,
+                                         std::vector<size_t> groups) {
+  openMVG::sfm::SfM_Data projection;
+  projection.intrinsics[0] = sfm_data.intrinsics.at(0);
+
+  // get all the camera ids
+  std::set<size_t> view_ids;
+  for (const auto &group_id : groups) {
+    const auto &group_views = cameras.group_to_images.at(group_id);
+    view_ids.insert(group_views.begin(), group_views.end());
+  }
+
+  /// copy the views and poses over
+  for (const auto &id_view : view_ids) {
+    const auto &view = sfm_data.views.at(id_view);
+    projection.views[id_view] = view;
+    projection.poses[view->id_pose] = sfm_data.poses.at(view->id_pose);
+  }
+
+  // copy and prune the landmarks to only what is visible
+  for (const auto &[id_landmark, landmark] : sfm_data.structure) {
+    openMVG::sfm::Landmark new_landmark{};
+
+    for (const auto &[observer_id, observation] : landmark.obs) {
+      if (view_ids.contains(observer_id)) {
+        new_landmark.obs[observer_id] = observation;
+      }
+    }
+
+    if (!new_landmark.obs.empty()) {
+      new_landmark.X = landmark.X;
+      projection.structure[id_landmark] = new_landmark;
+    }
+  }
+
+  return projection;
+}
+
+void update_sfm_data(openMVG::sfm::SfM_Data &sfm_data,
+                     const openMVG::sfm::SfM_Data &projection) {
+  // update view poses
+  for (const auto &[id_view, view] : projection.views) {
+    sfm_data.poses.at(view->id_pose) = projection.poses.at(view->id_pose);
+  }
+
+  // update landmark poses
+  for (const auto &[id_landmark, landmark] : projection.structure) {
+    sfm_data.structure.at(id_landmark).X = landmark.X;
+  }
+}
+
+void initialize_poses_from_group(const CameraSet &camera_set,
+                                 openMVG::sfm::SfM_Data &sfm_data) {
+  for (const auto &[id, view] : sfm_data.views) {
+    const Sophus::SE3d pose = camera_set.cameras.at(id)->pose;
+    sfm_data.poses[view->id_pose] =
+        openMVG::geometry::Pose3(pose.rotationMatrix(), pose.translation());
+  }
 }
