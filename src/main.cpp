@@ -171,52 +171,50 @@ int main(int argc, char **argv) {
 
   sfm_data = create_sfm_data(camera_set, calibration_data.get_intrinsics(),
                              regions, tracks);
+  initialize_poses(camera_set, sfm_data);
 
-  auto group = project_to_groups(camera_set, sfm_data, {2});
-  initialize_poses_from_group(camera_set, group);
-
-  std::cout << openMVG::sfm::Get_Valid_Views(group).size() << std::endl;
-
-  std::cout << std::format("Landmarks {}\n", group.structure.size());
+  std::cout << std::format("Valid Views {} \n",
+                           openMVG::sfm::Get_Valid_Views(sfm_data).size());
+  std::cout << std::format("Poses {}\n", sfm_data.poses.size());
+  std::cout << std::format("Landmarks {}\n", sfm_data.structure.size());
 
   openMVG::sfm::SfM_Data_Structure_Computation_Robust est(
-      4.0, 2, 2, openMVG::ETriangulationMethod::LINFINITY_ANGULAR, true);
-  est.triangulate(group);
-  std::cout << std::format("Removed {} tracks due to angle\n",
-                           openMVG::sfm::RemoveOutliers_AngleError(group, 1.5));
+      4.0, 2, 2, openMVG::ETriangulationMethod::DIRECT_LINEAR_TRANSFORM, true);
+  est.triangulate(sfm_data);
+  std::cout << std::format(
+      "Removed {} tracks due to angle\n",
+      openMVG::sfm::RemoveOutliers_AngleError(sfm_data, 2.0));
 
   const auto rm_pix =
-      openMVG::sfm::RemoveOutliers_PixelResidualError(group, 4.0);
+      openMVG::sfm::RemoveOutliers_PixelResidualError(sfm_data, 4.0);
   std::cout << std::format("Removed {} tracks due to reporjection error\n",
                            rm_pix);
 
-  const int min_point_per_pose = 12;
-  const int min_track_length = 6;
-  if (openMVG::sfm::eraseUnstablePosesAndObservations(group, min_point_per_pose,
-                                                      min_track_length)) {
-    openMVG::sfm::KeepLargestViewCCTracks(group);
-    openMVG::sfm::eraseUnstablePosesAndObservations(group, min_point_per_pose,
-                                                    min_track_length);
+  const int min_point_per_pose = 0;
+  const int min_track_length = 3;
+  if (openMVG::sfm::eraseUnstablePosesAndObservations(
+          sfm_data, min_point_per_pose, min_track_length)) {
+    openMVG::sfm::KeepLargestViewCCTracks(sfm_data);
+    openMVG::sfm::eraseUnstablePosesAndObservations(
+        sfm_data, min_point_per_pose, min_track_length);
     std::cout << std::format("After cleaning {} points",
-                             group.structure.size());
+                             sfm_data.structure.size());
   }
 
   openMVG::sfm::Bundle_Adjustment_Ceres::BA_Ceres_options options;
   options.linear_solver_type_ = ceres::SPARSE_SCHUR;
   openMVG::sfm::Bundle_Adjustment_Ceres ba(options);
-  ba.Adjust(group, openMVG::sfm::Optimize_Options(
-                       openMVG::cameras::Intrinsic_Parameter_Type::NONE,
-                       openMVG::sfm::Extrinsic_Parameter_Type::NONE,
-                       openMVG::sfm::Structure_Parameter_Type::ADJUST_ALL));
+  ba.Adjust(sfm_data, openMVG::sfm::Optimize_Options(
+                          openMVG::cameras::Intrinsic_Parameter_Type::NONE,
+                          openMVG::sfm::Extrinsic_Parameter_Type::NONE,
+                          openMVG::sfm::Structure_Parameter_Type::ADJUST_ALL));
 
   std::vector<openMVG::Vec3> points, track_colors, camera_positions;
-  if (openMVG::sfm::ColorizeTracks(group, points, track_colors)) {
-    GetCameraPositions(group, camera_positions);
+  if (openMVG::sfm::ColorizeTracks(sfm_data, points, track_colors)) {
+    GetCameraPositions(sfm_data, camera_positions);
     openMVG::plyHelper::exportToPly(points, camera_positions, "./cloud.ply",
                                     &track_colors);
   }
-
-  // openMVG::sfm::Save(group, "./cloud2.ply", openMVG::sfm::ESfM_Data::ALL);
 
   return 1;
 }

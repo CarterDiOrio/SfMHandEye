@@ -83,6 +83,12 @@ struct CameraSet {
 
   std::vector<std::shared_ptr<Camera>> cameras;
 
+  /// @brief the average transform hand to base transform of each group
+  std::unordered_map<size_t, Sophus::SE3d> average_T_base_hand;
+
+  /// @brief the average transform from the camera to the pase of each group
+  std::unordered_map<size_t, Sophus::SE3d> average_T_base_camera;
+
   /// @brief image id to group id
   std::unordered_map<size_t, size_t> image_to_group;
 
@@ -203,5 +209,15 @@ void update_sfm_data(openMVG::sfm::SfM_Data &sfm_data,
 /// @param sfm_data the sfm_data to initialize the poses for
 void initialize_poses_from_group(const CameraSet &camera_set,
                                  openMVG::sfm::SfM_Data &sfm_data);
+
+/// @brief Initializes the view poses by using an initial guess
+/// This initializes the poses for all views across all groups. Poses
+/// within each group have accruate transforms due to only undergoing
+/// translation. Between each group the registration is guessed via an initial
+/// hand eye guess and the robot arms motion
+/// @param camera_set the set of camera data
+/// @param sfm_data the sfm data to initialize the poses for
+void initialize_poses(const CameraSet &camera_set,
+                      openMVG::sfm::SfM_Data &sfm_data);
 
 #endif

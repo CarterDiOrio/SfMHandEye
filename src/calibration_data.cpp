@@ -1,5 +1,6 @@
 #include "chessboardless/calibration_data.hpp"
 
+#include "chessboardless/geometry.hpp"
 #include <Eigen/Dense>
 #include <Eigen/src/Core/Matrix.h>
 #include <Eigen/src/Geometry/AngleAxis.h>
@@ -30,6 +31,8 @@
 
 static constexpr double deg2rad = M_PI / 180;
 static const Eigen::AngleAxisd z90{-90.0 * deg2rad, Eigen::Vector3d::UnitZ()};
+static const Sophus::SE3d T_hand_camera =
+    Sophus::SE3d{z90.matrix(), Eigen::Vector3d::Zero()};
 
 CalibrationData::CalibrationData(const std::string_view &data_path)
     : data_directory{CalibrationData::validate_data_directory(data_path)} {
@@ -119,28 +122,31 @@ CameraSet &CalibrationData::load_cameras() {
       camera_set.group_to_images[group_id].push_back(cameras[idx]->id_view);
     }
 
-    const Sophus::SE3d T_hand_camera =
-        Sophus::SE3d{z90.matrix(), Eigen::Vector3d::Zero()};
-
     // get the mean hand pose of the group
+    std::vector<Sophus::SE3d> hand_poses;
+    for (const auto &camera : cameras) {
+      hand_poses.push_back(camera->T_base_hand);
+    }
+    const Sophus::SE3d T_base_hand_average = *Sophus::average(hand_poses);
+
+    // get the mean camera pose of the group
     std::vector<Sophus::SE3d> camera_poses;
     for (const auto &camera : cameras) {
       camera_poses.push_back(camera->T_base_hand * T_hand_camera);
     };
-
-    Sophus::SE3d T_base_camerap = *Sophus::average(camera_poses);
+    const Sophus::SE3d T_base_camerap = *Sophus::average(camera_poses);
 
     // add camera poses relative to the mean transform
     for (auto &camera : cameras) {
       camera->pose =
           T_base_camerap.inverse() * camera->T_base_hand * T_hand_camera;
-
-      std::cout << camera->pose.matrix() << std::endl;
     }
 
     // add cameras to camera set
     camera_set.cameras.insert(camera_set.cameras.end(), cameras.begin(),
                               cameras.end());
+    camera_set.average_T_base_hand[group_id] = T_base_hand_average;
+    camera_set.average_T_base_camera[group_id] = T_base_camerap;
   }
 
   return camera_set;
@@ -316,11 +322,6 @@ openMVG::sfm::SfM_Data create_sfm_data(
           regions_provider->get(imaIndex)->GetRegionPosition(featIndex);
       obs[imaIndex] = {pt, featIndex};
     }
-
-    if (obs.empty()) {
-      structure.erase(idx);
-    }
-
     ++idx;
   }
 
@@ -385,5 +386,25 @@ void initialize_poses_from_group(const CameraSet &camera_set,
     const Sophus::SE3d pose = camera_set.cameras.at(id)->pose;
     sfm_data.poses[view->id_pose] =
         openMVG::geometry::Pose3(pose.rotationMatrix(), pose.translation());
+  }
+}
+
+void initialize_poses(const CameraSet &camera_set,
+                      openMVG::sfm::SfM_Data &sfm_data) {
+  const Sophus::SE3d T_base_v1 =
+      camera_set.cameras
+          .at(sfm_data.views.at((*sfm_data.views.begin()).first)->id_view)
+          ->T_base_hand *
+      T_hand_camera;
+
+  const Sophus::SE3d t0 = camera_set.average_T_base_camera.at(0);
+
+  for (const auto &[id, view] : sfm_data.views) {
+    const auto &group_id = camera_set.image_to_group.at(id);
+
+    const Sophus::SE3d pose =
+        (camera_set.cameras.at(id)->T_base_hand * T_hand_camera);
+
+    sfm_data.poses[view->id_pose] = se3_to_pose3(pose);
   }
 }
