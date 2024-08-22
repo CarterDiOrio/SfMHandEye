@@ -1,4 +1,5 @@
 #define OPENMVG_USE_OPENMP
+#include "chessboardless/geometry.hpp"
 #include "chessboardless/SfMPlyHelper.hpp"
 #include "chessboardless/calibration_data.hpp"
 #include "chessboardless/features.hpp"
@@ -37,12 +38,6 @@
 #include <openMVG/sfm/sfm_data_io_ply.hpp>
 #include <openMVG/sfm/sfm_data_triangulation.hpp>
 #include <openMVG/stl/stl.hpp>
-#include <opencv2/core.hpp>
-#include <opencv2/core/eigen.hpp>
-#include <opencv2/features2d.hpp>
-#include <opencv2/highgui.hpp>
-#include <opencv2/imgcodecs.hpp>
-#include <opencv2/imgproc.hpp>
 #include <ranges>
 #include <sfm/pipelines/sequential/SfmSceneInitializerMaxPair.hpp>
 #include <sfm/pipelines/sequential/sequential_SfM.hpp>
@@ -56,6 +51,7 @@
 #include <string_view>
 #include <thread>
 #include <types.hpp>
+#include <sophus/average.hpp>
 
 namespace ranges = std::ranges;
 
@@ -77,7 +73,7 @@ int main(int argc, char **argv) {
       532.698852539062, 0, 0, 1;
 
   auto calibration_data = CalibrationData{argv[1]};
-  const auto camera_set = calibration_data.get_cameras();
+  auto camera_set = calibration_data.get_cameras();
 
   auto image_describer = create_image_describer("SIFT");
   image_describer->Set_configuration_preset(
@@ -88,10 +84,10 @@ int main(int argc, char **argv) {
     images.push_back(camera->image);
   }
 
-  auto sfm_data =
+  auto pre_sfm_data =
       cameras_to_sfm_data(camera_set, calibration_data.get_intrinsics());
 
-  const auto regions = [&calibration_data, &image_describer, &sfm_data]() {
+  const auto regions = [&calibration_data, &image_describer, &pre_sfm_data]() {
     if (!calibration_data.has_features()) {
       auto r =
           describe_images(*image_describer, calibration_data.get_cameras());
@@ -104,10 +100,26 @@ int main(int argc, char **argv) {
     openMVG::system::LoggerProgress progress_bar(
         calibration_data.get_cameras().cameras.size(), "- LOADING FEATURES -");
 
-    region_provider->load(sfm_data, calibration_data.get_feature_directory(),
+    region_provider->load(pre_sfm_data, calibration_data.get_feature_directory(),
                           type, &progress_bar);
     return region_provider;
   }();
+
+
+  // for (size_t i = 0;; i++) {
+  //   auto reg = regions->get(i);
+  //   if (!reg) {
+  //     break;
+  //   }
+
+    
+
+  //   auto* rcast = dynamic_cast<openMVG::features::SIFT_Regions*>(reg.get());
+    
+  //   for (const auto& feat: rcast->Features()) {
+  //     std::cout << feat.scale() << std::endl;
+  //   }
+  // }
 
   // openMVG::sfm::ReconstructionEngine;
 
@@ -122,92 +134,222 @@ int main(int argc, char **argv) {
       std::make_shared<openMVG::matching_image_collection::Matcher_Regions>(
           0.8f, openMVG::matching::CASCADE_HASHING_L2);
 
-  auto raw_matches = [&calibration_data, &matcher, &regions, &sfm_data]() {
+  auto raw_matches = [&calibration_data, &matcher, &regions, &pre_sfm_data]() {
     const auto maybe_matches = calibration_data.load_matches(true);
     if (maybe_matches.has_value()) {
       return maybe_matches.value();
     }
-    const auto m = match_pairs(*matcher, sfm_data, regions);
+    const auto m = match_pairs(*matcher, pre_sfm_data, regions);
     calibration_data.store_matches(m, true);
     return m;
   }();
 
   std::cout << std::format("Processing {} matches\n", raw_matches.size());
 
-  auto matches = [&calibration_data, &raw_matches, &regions, &sfm_data]() {
+  auto matches = [&calibration_data, &raw_matches, &regions, &pre_sfm_data]() {
     const auto maybe_matches = calibration_data.load_matches(false);
     if (maybe_matches.has_value()) {
       return maybe_matches.value();
     }
-    auto filtered_matches = filter_matches(sfm_data, regions, raw_matches);
+    auto filtered_matches = filter_matches(pre_sfm_data, regions, raw_matches);
     calibration_data.store_matches(filtered_matches, false);
     return filtered_matches;
   }();
 
   // -- export Putative View Graph statistics
-  openMVG::graph::getGraphStatistics(sfm_data.GetViews().size(),
+  openMVG::graph::getGraphStatistics(pre_sfm_data.GetViews().size(),
                                      getPairs(matches));
 
   //-- export view pair graph once putative graph matches has been computed
-  {
-    std::set<openMVG::IndexT> set_ViewIds;
-    std::transform(sfm_data.GetViews().begin(), sfm_data.GetViews().end(),
-                   std::inserter(set_ViewIds, set_ViewIds.begin()),
-                   stl::RetrieveKey());
-    openMVG::graph::indexedGraph putativeGraph(set_ViewIds, getPairs(matches));
-    openMVG::graph::exportToGraphvizData("./graph.svg", putativeGraph);
+  // {
+  //   std::set<openMVG::IndexT> set_ViewIds;
+  //   std::transform(sfm_data.GetViews().begin(), sfm_data.GetViews().end(),
+  //                  std::inserter(set_ViewIds, set_ViewIds.begin()),
+  //                  stl::RetrieveKey());
+  //   openMVG::graph::indexedGraph putativeGraph(set_ViewIds, getPairs(matches));
+  //   openMVG::graph::exportToGraphvizData("./graph.svg", putativeGraph);
+  // }
+
+  // {
+  //   openMVG::matching::Matches2SVG(
+  //       camera->s_Img_path, {camera->image.Width(), camera->image.Height()},
+  //       regions->get(camera->id_view)->GetRegionsPositions(),
+  //       camera2->s_Img_path, {camera2->image.Width(), camera2->image.Height()},
+  //       regions->get(camera2->id_view)->GetRegionsPositions(),
+  //       matches.at({camera->id_view, camera2->id_view}), "./matches.svg", true);
+  // }
+
+  // const auto tracks = create_feature_tracks(matches);
+
+  // sfm_data = create_sfm_data(camera_set, calibration_data.get_intrinsics(),
+  //                            regions, tracks);
+  // initialize_poses(camera_set, sfm_data);
+  
+
+  // for (size_t i = 0; i < 1; i++) {
+  //   triangulate(tracks, sfm_data, true);
+
+  //   const Sophus::SE3d initial_guess = T_hand_camera;
+
+  //   const Sophus::SE3d T_hand_eye =
+  //       calibrate_hand_eye(sfm_data, camera_set, initial_guess, intrinsics, *regions);
+  // }
+
+  openMVG::sfm::SfM_Data sfm_data;
+  if (!openMVG::sfm::Load(sfm_data, "./sfm.bin", openMVG::sfm::ESfM_Data::ALL)) {
+
+    auto type = image_describer->Allocate();
+    auto feature_provider = std::make_shared<openMVG::sfm::Features_Provider>();
+    feature_provider->load(pre_sfm_data, calibration_data.get_feature_directory(),
+                          type);
+
+    auto match_provider = std::make_shared<openMVG::sfm::Matches_Provider>();
+    match_provider->load(pre_sfm_data, calibration_data.get_matches_path(false));
+
+    auto scene_init = std::make_unique<openMVG::sfm::SfMSceneInitializerMaxPair>(
+        pre_sfm_data, feature_provider.get(), match_provider.get());
+
+    std::unique_ptr<openMVG::sfm::ReconstructionEngine> sfm_engine;
+    openMVG::sfm::SequentialSfMReconstructionEngine *engine =
+        new openMVG::sfm::SequentialSfMReconstructionEngine(pre_sfm_data, "./",
+                                                            "./report.html");
+
+    engine->SetFeaturesProvider(feature_provider.get());
+    engine->SetMatchesProvider(match_provider.get());
+    engine->SetTriangulationMethod(
+        openMVG::ETriangulationMethod::INVERSE_DEPTH_WEIGHTED_MIDPOINT);
+    engine->SetResectionMethod(openMVG::resection::SolverType::DEFAULT);
+    engine->SetUnknownCameraType(openMVG::cameras::EINTRINSIC(
+        openMVG::cameras::EINTRINSIC::PINHOLE_CAMERA));
+    // engine->setInitialPair({0, 9});
+    sfm_engine.reset(engine);
+
+    sfm_engine->Set_Intrinsics_Refinement_Type(
+        openMVG::cameras::Intrinsic_Parameter_Type::NONE);
+    sfm_engine->Set_Extrinsics_Refinement_Type(
+        openMVG::sfm::Extrinsic_Parameter_Type::ADJUST_ALL);
+    sfm_engine->Set_Use_Motion_Prior(false);
+
+    std::cout << sfm_engine->Process() << std::endl;
+
+    Generate_SfM_Report(
+        sfm_engine->Get_SfM_Data(),
+        stlplus::create_filespec("./", "SfMReconstruction_Report.html"));
+    openMVG::sfm::Save(sfm_engine->Get_SfM_Data(), "./sfm.bin", openMVG::sfm::ESfM_Data::ALL);
+    sfm_data = sfm_engine->Get_SfM_Data();
   }
 
-  {
-    openMVG::matching::Matches2SVG(
-        camera->s_Img_path, {camera->image.Width(), camera->image.Height()},
-        regions->get(camera->id_view)->GetRegionsPositions(),
-        camera2->s_Img_path, {camera2->image.Width(), camera2->image.Height()},
-        regions->get(camera2->id_view)->GetRegionsPositions(),
-        matches.at({camera->id_view, camera2->id_view}), "./matches.svg", true);
+  std::cout << "loaded" << std::endl;
+
+  for(size_t idx = 0; idx < 10; idx++) {
+    std::cout << sfm_data.poses.contains(sfm_data.views[idx]->id_pose) << std::endl;
   }
 
-  const auto tracks = create_feature_tracks(matches);
+  // get the scale factor for the world using the first group
+  // with the origin being the first camera in the first group
+  // this is a very naive way of calculating a scale transform between the two systems
+  const Sophus::SE3d T_world_cam0 = camera_set.cameras.at(camera_set.group_to_images.at(0).at(0))->pose;
+  // std::unordered_map<size_t, Sophus::SE3d> T_cam0_camk;
 
-  sfm_data = create_sfm_data(camera_set, calibration_data.get_intrinsics(),
-                             regions, tracks);
-  initialize_poses(camera_set, sfm_data);
+  double average_true_translation = 0.0;
+  double average_sfm_translation = 0.0;
+  size_t count = 0;
+  for (const auto& camera_id: camera_set.group_to_images.at(0)) {
+    if (camera_id != 0) {
 
-  std::cout << std::format("Valid Views {} \n",
-                           openMVG::sfm::Get_Valid_Views(sfm_data).size());
-  std::cout << std::format("Poses {}\n", sfm_data.poses.size());
-  std::cout << std::format("Landmarks {}\n", sfm_data.structure.size());
+      // make sure it was a valid sfm pose
+      if (sfm_data.poses.contains(camera_id)) {
+        
+        // get the ground truth translation
+        const auto& camk = camera_set.cameras.at(camera_id);
+        const Sophus::SE3d T_cam0_camk = T_world_cam0.inverse() * camk->pose;
+        average_true_translation += T_cam0_camk.translation().norm();
 
+        // get the average sfm translation
+        const auto& T_sfm_cam0 = pose3_to_se3<double>(sfm_data.poses[sfm_data.views.at(0)->id_pose]);
+        const auto& T_sfm_camk = pose3_to_se3<double>(sfm_data.poses[sfm_data.views.at(camera_id)->id_pose]);
+        average_sfm_translation += (T_sfm_cam0.inverse() * T_sfm_camk).translation().norm();
+        count++;
+      }
+    }
+  }
+
+  average_true_translation /= count;
+  average_sfm_translation /= count;
+
+  const double scale = average_true_translation / average_sfm_translation;
+
+  std::cout << std::format("SfM to True Scale: {}\n", scale);
+
+  // scale all poses translations by scale factor
+  for (auto& [_, pose]: sfm_data.poses) {
+    Sophus::SE3d pose_scaled_se3 = pose3_to_se3<double>(pose);
+    pose_scaled_se3.translation() *= scale;
+    auto pose_scaled = se3_to_pose3(pose_scaled_se3);
+    pose.rotation() = pose_scaled.rotation();
+    pose.center() = pose_scaled.center();
+  }
+
+  // triangulate
   openMVG::sfm::SfM_Data_Structure_Computation_Robust est(
-      4.0, 2, 2, openMVG::ETriangulationMethod::DIRECT_LINEAR_TRANSFORM, true);
+      4.0, 2, 2, openMVG::ETriangulationMethod::INVERSE_DEPTH_WEIGHTED_MIDPOINT, true);
   est.triangulate(sfm_data);
-  std::cout << std::format(
-      "Removed {} tracks due to angle\n",
-      openMVG::sfm::RemoveOutliers_AngleError(sfm_data, 2.0));
 
-  const auto rm_pix =
-      openMVG::sfm::RemoveOutliers_PixelResidualError(sfm_data, 4.0);
-  std::cout << std::format("Removed {} tracks due to reporjection error\n",
-                           rm_pix);
+  // for (auto& [id, landmark]: sfm_data.structure) {
+  //   landmark.X *= scale;
+  // }
 
-  const int min_point_per_pose = 0;
-  const int min_track_length = 3;
-  if (openMVG::sfm::eraseUnstablePosesAndObservations(
-          sfm_data, min_point_per_pose, min_track_length)) {
-    openMVG::sfm::KeepLargestViewCCTracks(sfm_data);
-    openMVG::sfm::eraseUnstablePosesAndObservations(
-        sfm_data, min_point_per_pose, min_track_length);
-    std::cout << std::format("After cleaning {} points",
-                             sfm_data.structure.size());
+  Sophus::SE3d T_hand_eye = calibrate_hand_eye(sfm_data,
+    camera_set,
+    T_hand_camera,
+    intrinsics,
+    *regions);
+
+  calculate_relative_error(
+    camera_set,
+    sfm_data,
+    T_hand_eye
+  );
+
+  // update all camera poses using T_hand_eye
+  // find the robots location 
+  std::vector<Sophus::SE3d> T_world_bases;
+  for (const auto& view_id: openMVG::sfm::Get_Valid_Views(sfm_data)) {
+    const Sophus::SE3d T_world_cam = pose3_to_se3<double>(sfm_data.poses[sfm_data.views[view_id]->id_pose]);
+    const Sophus::SE3d T_world_base = T_world_cam * T_hand_eye.inverse() * camera_set.cameras[view_id]->T_base_hand.inverse();
+    T_world_bases.push_back(T_world_base);
+  }
+  const Sophus::SE3d T_world_base = *Sophus::average(T_world_bases);
+
+  for (const auto& view_id: openMVG::sfm::Get_Valid_Views(sfm_data)) {
+    const Sophus::SE3d T_world_cam = T_world_base * camera_set.cameras[view_id]->T_base_hand * T_hand_eye;
+    sfm_data.poses[sfm_data.views[view_id]->id_pose] = se3_to_pose3(T_world_cam);
   }
 
-  openMVG::sfm::Bundle_Adjustment_Ceres::BA_Ceres_options options;
-  options.linear_solver_type_ = ceres::SPARSE_SCHUR;
-  openMVG::sfm::Bundle_Adjustment_Ceres ba(options);
-  ba.Adjust(sfm_data, openMVG::sfm::Optimize_Options(
-                          openMVG::cameras::Intrinsic_Parameter_Type::NONE,
-                          openMVG::sfm::Extrinsic_Parameter_Type::NONE,
-                          openMVG::sfm::Structure_Parameter_Type::ADJUST_ALL));
+  T_hand_eye = ba_hand_eye(
+    sfm_data,
+    camera_set,
+    T_hand_eye,
+    intrinsics,
+    T_world_base,
+    *regions
+  );
+
+  calculate_relative_error(
+    camera_set,
+    sfm_data,
+    T_hand_eye
+  );
+
+  // bundle adjust again
+  // openMVG::sfm::Bundle_Adjustment_Ceres::BA_Ceres_options options;
+  // options.linear_solver_type_ = ceres::SPARSE_SCHUR;
+  // openMVG::sfm::Bundle_Adjustment_Ceres ba(options);
+  // ba.Adjust(sfm_data,
+  //           openMVG::sfm::Optimize_Options(
+  //               openMVG::cameras::Intrinsic_Parameter_Type::NONE,
+  //               openMVG::sfm::Extrinsic_Parameter_Type::NONE,
+  //               openMVG::sfm::Structure_Parameter_Type::ADJUST_ALL));
 
   std::vector<openMVG::Vec3> points, track_colors, camera_positions;
   if (openMVG::sfm::ColorizeTracks(sfm_data, points, track_colors)) {
@@ -215,6 +357,10 @@ int main(int argc, char **argv) {
     openMVG::plyHelper::exportToPly(points, camera_positions, "./cloud.ply",
                                     &track_colors);
   }
+
+
+
+
 
   return 1;
 }

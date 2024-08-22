@@ -3,24 +3,16 @@ project(chessboardless)
 
 find_package(Ceres REQUIRED)
 find_package(Sophus REQUIRED)
-find_package(OpenCV REQUIRED )
 find_package(OpenMVG REQUIRED)
 find_package(nlohmann_json REQUIRED)
-include_directories( ${OpenCV_INCLUDE_DIRS} )
-
-find_package(GTSAMCMakeTools)
-include(GtsamBuildTypes) # Load build type flags and default to Debug mode
-find_package(GTSAM REQUIRED)
-include_directories(${GTSAM_INCLUDE_DIR})
 
 
 add_executable(calibrate src/main.cpp 
                          src/calibration_data.cpp
-                         src/features.cpp)
-target_link_libraries(calibrate ${OpenCV_LIBS} 
+                         src/features.cpp
+                         src/geometry.cpp)
+target_link_libraries(calibrate 
                               Sophus::Sophus
-                              Ceres::ceres
-                              gtsam
                               nlohmann_json::nlohmann_json
                               OpenMVG::openMVG_camera
                               OpenMVG::openMVG_exif
@@ -36,7 +28,8 @@ target_link_libraries(calibrate ${OpenCV_LIBS}
                               OpenMVG::openMVG_numeric
                               OpenMVG::openMVG_robust_estimation
                               OpenMVG::openMVG_sfm
-                              OpenMVG::openMVG_system)
+                              OpenMVG::openMVG_system
+                              Ceres::ceres)
 
 target_include_directories(calibrate
     PUBLIC

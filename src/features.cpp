@@ -1,5 +1,5 @@
-#include <tracks/tracks.hpp>
 #define OPENMVG_USE_OPENMP
+#include <tracks/tracks.hpp>
 
 #include "chessboardless/features.hpp"
 #include <algorithm>

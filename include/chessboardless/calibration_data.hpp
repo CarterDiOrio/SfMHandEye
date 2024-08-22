@@ -14,7 +14,6 @@
 #include <openMVG/matching/indMatch.hpp>
 #include <openMVG/sfm/sfm_data.hpp>
 #include <openMVG/sfm/sfm_view.hpp>
-#include <opencv2/core.hpp>
 #include <sfm/pipelines/sfm_regions_provider.hpp>
 #include <sophus/se3.hpp>
 #include <string_view>
@@ -24,6 +23,11 @@
 
 using Image = openMVG::image::Image<openMVG::image::RGBColor>;
 using RegionsPtr = std::unique_ptr<openMVG::features::Regions>;
+
+static constexpr double deg2rad = M_PI / 180;
+static const Eigen::AngleAxisd z90{-90.0 * deg2rad, Eigen::Vector3d::UnitZ()};
+static const Sophus::SE3d T_hand_camera =
+    Sophus::SE3d{z90.matrix(), Eigen::Vector3d::Zero()};
 
 struct CameraJson {
   /// @brief the filename of the image
@@ -88,6 +92,9 @@ struct CameraSet {
 
   /// @brief the average transform from the camera to the pase of each group
   std::unordered_map<size_t, Sophus::SE3d> average_T_base_camera;
+
+  /// @brief The pose of each group relative to the others
+  std::unordered_map<size_t, Sophus::SE3d> group_pose;
 
   /// @brief image id to group id
   std::unordered_map<size_t, size_t> image_to_group;
@@ -217,7 +224,7 @@ void initialize_poses_from_group(const CameraSet &camera_set,
 /// hand eye guess and the robot arms motion
 /// @param camera_set the set of camera data
 /// @param sfm_data the sfm data to initialize the poses for
-void initialize_poses(const CameraSet &camera_set,
+void initialize_poses(CameraSet &camera_set,
                       openMVG::sfm::SfM_Data &sfm_data);
 
 #endif

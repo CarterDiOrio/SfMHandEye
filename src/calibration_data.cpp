@@ -20,7 +20,6 @@
 #include <openMVG/cameras/Camera_Pinhole.hpp>
 #include <openMVG/image/image_io.hpp>
 #include <openMVG/system/loggerprogress.hpp>
-#include <opencv2/imgcodecs.hpp>
 #include <optional>
 #include <sfm/pipelines/sfm_regions_provider.hpp>
 #include <sfm/sfm_data.hpp>
@@ -28,11 +27,6 @@
 #include <sophus/average.hpp>
 #include <stdexcept>
 #include <tracks/tracks.hpp>
-
-static constexpr double deg2rad = M_PI / 180;
-static const Eigen::AngleAxisd z90{-90.0 * deg2rad, Eigen::Vector3d::UnitZ()};
-static const Sophus::SE3d T_hand_camera =
-    Sophus::SE3d{z90.matrix(), Eigen::Vector3d::Zero()};
 
 CalibrationData::CalibrationData(const std::string_view &data_path)
     : data_directory{CalibrationData::validate_data_directory(data_path)} {
@@ -83,7 +77,7 @@ CameraSet &CalibrationData::load_cameras() {
 
       cameras[idx] = std::make_shared<Camera>();
 
-      std::cout << std::format("Loading Image: {}\n", camera_id);
+      std::cout << std::format("Loading Image: {}\n", camera_json.image);
 
       const auto image_filepath = data_directory / camera_json.image;
       if (!std::filesystem::exists(image_filepath)) {
@@ -92,9 +86,6 @@ CameraSet &CalibrationData::load_cameras() {
                         image_filepath.string()));
       }
       openMVG::image::ReadImage(image_filepath.c_str(), &cameras[idx]->image);
-
-      // std::cout << std::format("{} {} {}\n", camera_json.pose[3],
-      //                          camera_json.pose[4], camera_json.pose[5]);
 
       const Eigen::AngleAxisd x_rot{camera_json.pose[3] * deg2rad,
                                     Eigen::Vector3d::UnitX()};
@@ -255,10 +246,14 @@ openMVG::sfm::SfM_Data cameras_to_sfm_data(
 
   size_t pose_id = 0;
   for (const auto &camera : cameras.cameras) {
-    camera->id_intrinsic = 0;
-    sfm_data.views[camera->id_view] = camera;
+    sfm_data.views[camera->id_view] = std::make_shared<openMVG::sfm::View>();
+    sfm_data.views[camera->id_view]->id_intrinsic = 0;
+    sfm_data.views[camera->id_view]->id_pose = pose_id;
+    sfm_data.views[camera->id_view]->s_Img_path = camera->s_Img_path;
+    sfm_data.views[camera->id_view]->ui_height = camera->ui_height;
+    sfm_data.views[camera->id_view]->ui_width = camera->ui_width;
+    sfm_data.views[camera->id_view]->id_view = camera->id_view;
     sfm_data.poses[pose_id] = openMVG::geometry::Pose3();
-    camera->id_pose = pose_id;
     pose_id++;
   }
 
@@ -389,16 +384,8 @@ void initialize_poses_from_group(const CameraSet &camera_set,
   }
 }
 
-void initialize_poses(const CameraSet &camera_set,
+void initialize_poses(CameraSet &camera_set,
                       openMVG::sfm::SfM_Data &sfm_data) {
-  const Sophus::SE3d T_base_v1 =
-      camera_set.cameras
-          .at(sfm_data.views.at((*sfm_data.views.begin()).first)->id_view)
-          ->T_base_hand *
-      T_hand_camera;
-
-  const Sophus::SE3d t0 = camera_set.average_T_base_camera.at(0);
-
   for (const auto &[id, view] : sfm_data.views) {
     const auto &group_id = camera_set.image_to_group.at(id);
 
@@ -407,4 +394,24 @@ void initialize_poses(const CameraSet &camera_set,
 
     sfm_data.poses[view->id_pose] = se3_to_pose3(pose);
   }
+
+  // first group is the origin
+  // const Sophus::SE3d T_base_origin = camera_set.average_T_base_camera.at(0);
+  
+  // for (const auto& [group_id, camera_ids]: camera_set.group_to_images) {
+    
+  //   // set the groups pose relative to the origin
+  //   const Sophus::SE3d T_origin_group = T_base_origin.inverse() * camera_set.average_T_base_camera.at(group_id);
+    
+  //   std::cout << T_origin_group.matrix() << std::endl;
+  //   camera_set.group_pose[group_id] = T_origin_group;
+
+  //   for (const auto& camera_id: camera_ids) {
+  //     // set up each cameras pose
+  //     // each camera is relative to their group
+  //     const Sophus::SE3d T_origin_camera = T_origin_group * camera_set.cameras.at(camera_id)->pose;
+  //     sfm_data.poses[sfm_data.views[camera_id]->id_pose] = se3_to_pose3(T_origin_camera);
+  //   }
+  // }
+
 }
