@@ -5,6 +5,9 @@ find_package(Ceres REQUIRED)
 find_package(Sophus REQUIRED)
 find_package(OpenMVG REQUIRED)
 find_package(nlohmann_json REQUIRED)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs) 
+find_library(MRCAL_LIB mrcal HINTS /usr/lib/x86_64-linux-gnu)
+
 
 
 add_executable(calibrate src/main.cpp 
@@ -29,7 +32,11 @@ target_link_libraries(calibrate
                               OpenMVG::openMVG_robust_estimation
                               OpenMVG::openMVG_sfm
                               OpenMVG::openMVG_system
-                              Ceres::ceres)
+                              Ceres::ceres
+                              ${MRCAL_LIB}
+                              opencv_core 
+                              opencv_imgproc
+                              opencv_imgcodecs)
 
 target_include_directories(calibrate
     PUBLIC

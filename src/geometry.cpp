@@ -14,54 +14,83 @@
 #include <sophus/se3.hpp>
 #include <unordered_map>
 
-void triangulate(const openMVG::tracks::STLMAPTracks &tracks,
-                 openMVG::sfm::SfM_Data &sfm_data, bool do_bundle_adjust) {
-  std::cout << std::format("Valid Views {} \n",
-                           openMVG::sfm::Get_Valid_Views(sfm_data).size());
-  std::cout << std::format("Poses {}\n", sfm_data.poses.size());
-  std::cout << std::format("Landmarks {}\n", sfm_data.structure.size());
+std::pair<cv::Mat, cv::Mat> create_mrcal_reprojection_map(
+  const mrcal_cameramodel_t & from,
+  const mrcal_cameramodel_t & to)
+{
+  // initialize the reprojection maps
+  const auto to_width = to.imagersize[0];
+  const auto to_height = to.imagersize[1];
 
-  openMVG::sfm::SfM_Data_Structure_Computation_Robust est(
-      4.0, 2, 2, openMVG::ETriangulationMethod::INVERSE_DEPTH_WEIGHTED_MIDPOINT, true);
-  est.triangulate(sfm_data);
-  std::cout << std::format(
-      "Removed {} tracks due to angle\n",
-      openMVG::sfm::RemoveOutliers_AngleError(sfm_data, 2.0));
+  // create a grid of points over the destination image
+  const auto points_to = [&to_width, &to_height] {
+    std::vector<mrcal_point2_t> points;
+    for (size_t r = 0; r < to_height; r++) {
+      for (size_t c = 0; c < to_width; c++) {
+        mrcal_point2_t point;
+        point.x = c;
+        point.y = r;
+        points.push_back(point);
+      }
+    }
+    return points;
+  }();
 
-  const auto rm_pix =
-      openMVG::sfm::RemoveOutliers_PixelResidualError(sfm_data, 4.0);
-  std::cout << std::format("Removed {} tracks due to reporjection error\n",
-                           rm_pix);
+  const auto rays = [&points_to, & lean_lens_model = to] {
+    std::vector<mrcal_point3_t> rays;
+    rays.resize(points_to.size() + 10);
+    mrcal_unproject(
+      rays.data(),
+      points_to.data(),
+      points_to.size(),
+      &lean_lens_model.lensmodel,
+      lean_lens_model.intrinsics);
+    return rays;
+  }();
 
-  const int min_point_per_pose = 0;
-  const int min_track_length = 3;
-  if (openMVG::sfm::eraseUnstablePosesAndObservations(
-          sfm_data, min_point_per_pose, min_track_length)) {
-    openMVG::sfm::KeepLargestViewCCTracks(sfm_data);
-    openMVG::sfm::eraseUnstablePosesAndObservations(
-        sfm_data, min_point_per_pose, min_track_length);
-    std::cout << std::format("After cleaning {} points",
-                             sfm_data.structure.size());
+  const auto projected_points = [&rays, & rich_lens_model = from] {
+    std::vector<mrcal_point2_t> projected_points;
+    projected_points.resize(rays.size() + 10);
+    mrcal_project(
+      projected_points.data(),
+      NULL,   // do not need the gradients
+      NULL,   // do not need the gradients
+      rays.data(),
+      rays.size(),
+      &rich_lens_model.lensmodel,
+      rich_lens_model.intrinsics);
+    return projected_points;
+  }();
+
+  cv::Mat map_x = cv::Mat::zeros(
+    {static_cast<int>(to_width), static_cast<int>(to_height)},
+    CV_32FC1);
+  cv::Mat map_y = cv::Mat::zeros(
+    {static_cast<int>(to_width), static_cast<int>(to_height)},
+    CV_32FC1);
+
+  for (size_t r = 0; r < to_height; r++) {
+    for (size_t c = 0; c < to_width; c++) {
+      const auto idx = r * to_width + c;
+      map_x.at<float>(r, c) = projected_points.at(idx).x;
+      map_y.at<float>(r, c) = projected_points.at(idx).y;
+    }
   }
 
-  if (do_bundle_adjust) {
-    openMVG::sfm::Bundle_Adjustment_Ceres::BA_Ceres_options options;
-    options.linear_solver_type_ = ceres::SPARSE_SCHUR;
-    openMVG::sfm::Bundle_Adjustment_Ceres ba(options);
-    ba.Adjust(sfm_data,
-              openMVG::sfm::Optimize_Options(
-                  openMVG::cameras::Intrinsic_Parameter_Type::NONE,
-                  openMVG::sfm::Extrinsic_Parameter_Type::NONE,
-                  openMVG::sfm::Structure_Parameter_Type::ADJUST_ALL));
-  }
+  return {
+    map_x,
+    map_y
+  };
 }
 
 
-Sophus::SE3d ba_hand_eye(openMVG::sfm::SfM_Data &sfm_data,
-                                CameraSet &camera_set,
-                                const Sophus::SE3d& initial_guess,  const Eigen::Matrix3d K,
-                                const Sophus::SE3d& T_world_base_guess,
-                                const openMVG::sfm::Regions_Provider& regions_provider) {
+Sophus::SE3d ba_hand_eye(
+  openMVG::sfm::SfM_Data & sfm_data,
+  CameraSet & camera_set,
+  const Sophus::SE3d & initial_guess, const Eigen::Matrix3d K,
+  const Sophus::SE3d & T_world_base_guess,
+  const openMVG::sfm::Regions_Provider & regions_provider)
+{
   Sophus::SE3d T_hand_eye = initial_guess;
   Sophus::SE3d T_world_base = T_world_base_guess;
 
@@ -70,10 +99,12 @@ Sophus::SE3d ba_hand_eye(openMVG::sfm::SfM_Data &sfm_data,
   ceres::Problem problem;
   auto parameterization = new Sophus::Manifold<Sophus::SE3>;
 
-  problem.AddParameterBlock(T_hand_eye.data(), Sophus::SE3d::num_parameters,
-                            parameterization);
-  problem.AddParameterBlock(T_world_base.data(), Sophus::SE3d::num_parameters,
-                            parameterization);
+  problem.AddParameterBlock(
+    T_hand_eye.data(), Sophus::SE3d::num_parameters,
+    parameterization);
+  problem.AddParameterBlock(
+    T_world_base.data(), Sophus::SE3d::num_parameters,
+    parameterization);
 
 
   auto loss = new ceres::HuberLoss(1.0);
@@ -82,17 +113,17 @@ Sophus::SE3d ba_hand_eye(openMVG::sfm::SfM_Data &sfm_data,
 
     for (const auto &[obs_id, observation] : landmark.obs) {
 
-    //  const auto regions = regions_provider.get(camera_id);
-    //   const auto* sio_regions = dynamic_cast<openMVG::features::SIFT_Regions*>(regions.get());
-    //   const auto& feature = sio_regions->Features().at(observation.id_feat);
-    //   const auto scale = feature.scale()
+      //  const auto regions = regions_provider.get(camera_id);
+      //   const auto* sio_regions = dynamic_cast<openMVG::features::SIFT_Regions*>(regions.get());
+      //   const auto& feature = sio_regions->Features().at(observation.id_feat);
+      //   const auto scale = feature.scale()
 
 
       // for each observation we add a reprojection cost function
       problem.AddResidualBlock(
-          BasicHandEyeCostFunction::Create(
-              K, observation.x, camera_set.cameras.at(obs_id)->T_base_hand),
-          loss, landmark.X.data(), T_hand_eye.data(), T_world_base.data());
+        BasicHandEyeCostFunction::Create(
+          K, observation.x, camera_set.cameras.at(obs_id)->T_base_hand),
+        loss, landmark.X.data(), T_hand_eye.data(), T_world_base.data());
     }
   }
 
@@ -112,9 +143,10 @@ Sophus::SE3d ba_hand_eye(openMVG::sfm::SfM_Data &sfm_data,
 
   // update the sfm with the new camera poses
   // and update the camera data
-  for (const auto& view_id: valid_view_ids) {
-    sfm_data.poses[sfm_data.views[view_id]->id_pose] = se3_to_pose3(T_world_base * 
-    camera_set.cameras[view_id]->T_base_hand * T_hand_eye);
+  for (const auto & view_id: valid_view_ids) {
+    sfm_data.poses[sfm_data.views[view_id]->id_pose] = se3_to_pose3(
+      T_world_base *
+      camera_set.cameras[view_id]->T_base_hand * T_hand_eye);
   }
 
   std::cout << T_hand_eye.matrix() << std::endl;
@@ -123,17 +155,17 @@ Sophus::SE3d ba_hand_eye(openMVG::sfm::SfM_Data &sfm_data,
 }
 
 
-
-
-Sophus::SE3d calibrate_hand_eye(openMVG::sfm::SfM_Data &sfm_data,
-                                CameraSet &camera_set,
-                                Sophus::SE3d initial_guess, Eigen::Matrix3d K,
-                                const openMVG::sfm::Regions_Provider& regions_provider) {
+Sophus::SE3d calibrate_hand_eye(
+  openMVG::sfm::SfM_Data & sfm_data,
+  CameraSet & camera_set,
+  Sophus::SE3d initial_guess, Eigen::Matrix3d K,
+  const openMVG::sfm::Regions_Provider & regions_provider)
+{
   Sophus::SE3d T_hand_eye = initial_guess;
 
-   // find all camera ids that are valid within the sfm data
+  // find all camera ids that are valid within the sfm data
   std::set<size_t> valid_camera_ids;
-  for (const auto& [view_id, view]: sfm_data.views) {
+  for (const auto & [view_id, view]: sfm_data.views) {
     if (sfm_data.poses.contains(view->id_pose)) {
       valid_camera_ids.insert(view_id);
     }
@@ -142,13 +174,14 @@ Sophus::SE3d calibrate_hand_eye(openMVG::sfm::SfM_Data &sfm_data,
   ceres::Problem problem;
   auto parameterization = new Sophus::Manifold<Sophus::SE3>;
 
-  problem.AddParameterBlock(T_hand_eye.data(), Sophus::SE3d::num_parameters,
-                            parameterization);
+  problem.AddParameterBlock(
+    T_hand_eye.data(), Sophus::SE3d::num_parameters,
+    parameterization);
 
 
   // for every pair of valid ids
-  for (const auto& camera_id1: valid_camera_ids) {
-    for (const auto& camera_id2: valid_camera_ids) {
+  for (const auto & camera_id1: valid_camera_ids) {
+    for (const auto & camera_id2: valid_camera_ids) {
       if (camera_id1 != camera_id2) {
 
         problem.AddResidualBlock(
@@ -186,23 +219,27 @@ Sophus::SE3d calibrate_hand_eye(openMVG::sfm::SfM_Data &sfm_data,
   return T_hand_eye;
 }
 
-void calculate_relative_error(const CameraSet &camera_set,
-                              const openMVG::sfm::SfM_Data& sfm_data,
-                              const Sophus::SE3d &T_hand_eye) {
-  
+void calculate_relative_error(
+  const CameraSet & camera_set,
+  const openMVG::sfm::SfM_Data & sfm_data,
+  const Sophus::SE3d & T_hand_eye)
+{
+
   const auto valid_view_ids = openMVG::sfm::Get_Valid_Views(sfm_data);
-  
+
 
   size_t count = 0;
   double translation = 0.0;
-  for (const auto& view_id1: valid_view_ids) {
-    for (const auto& view_id2: valid_view_ids) {
+  for (const auto & view_id1: valid_view_ids) {
+    for (const auto & view_id2: valid_view_ids) {
 
       if (view_id1 != view_id2) {
 
         // transform in sfm frame
-        const Sophus::SE3d T_sfm_eye1 = pose3_to_se3<double>(sfm_data.poses.at(sfm_data.views.at(view_id1)->id_pose));
-        const Sophus::SE3d T_sfm_eye2 = pose3_to_se3<double>(sfm_data.poses.at(sfm_data.views.at(view_id2)->id_pose));
+        const Sophus::SE3d T_sfm_eye1 =
+          pose3_to_se3<double>(sfm_data.poses.at(sfm_data.views.at(view_id1)->id_pose));
+        const Sophus::SE3d T_sfm_eye2 =
+          pose3_to_se3<double>(sfm_data.poses.at(sfm_data.views.at(view_id2)->id_pose));
         const Sophus::SE3d T_eye1_eye2 = T_sfm_eye1.inverse() * T_sfm_eye2;
 
 

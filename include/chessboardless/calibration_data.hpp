@@ -14,6 +14,7 @@
 #include <openMVG/matching/indMatch.hpp>
 #include <openMVG/sfm/sfm_data.hpp>
 #include <openMVG/sfm/sfm_view.hpp>
+#include <opencv2/core/mat.hpp>
 #include <sfm/pipelines/sfm_regions_provider.hpp>
 #include <sophus/se3.hpp>
 #include <string_view>
@@ -27,9 +28,10 @@ using RegionsPtr = std::unique_ptr<openMVG::features::Regions>;
 static constexpr double deg2rad = M_PI / 180;
 static const Eigen::AngleAxisd z90{-90.0 * deg2rad, Eigen::Vector3d::UnitZ()};
 static const Sophus::SE3d T_hand_camera =
-    Sophus::SE3d{z90.matrix(), Eigen::Vector3d::Zero()};
+  Sophus::SE3d{z90.matrix(), Eigen::Vector3d::Zero()};
 
-struct CameraJson {
+struct CameraJson
+{
   /// @brief the filename of the image
   std::string image;
 
@@ -39,19 +41,22 @@ struct CameraJson {
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(CameraJson, image, pose);
 
-struct CameraGroupJson {
+struct CameraGroupJson
+{
   std::vector<CameraJson> cameras;
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(CameraGroupJson, cameras);
 
-struct DataJson {
+struct DataJson
+{
   std::vector<CameraGroupJson> groups;
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(DataJson, groups);
 
 /// @brief Camera Group is a collection of cameras that underwent only
 /// translation
-struct CameraGroup {
+struct CameraGroup
+{
   /// @brief images the images taken by the cameras
   std::vector<openMVG::image::Image<openMVG::image::RGBColor>> images;
 
@@ -65,9 +70,11 @@ struct CameraGroup {
   std::vector<Sophus::SE3d> camera_poses;
 };
 
-struct Camera : public openMVG::sfm::View {
+struct Camera : public openMVG::sfm::View
+{
 public:
-  Camera() : openMVG::sfm::View() {}
+  Camera()
+  : openMVG::sfm::View() {}
 
   /// @brief the id of the camera's group
   size_t group_id;
@@ -83,7 +90,8 @@ public:
 };
 
 /// @brief a collection of camera groups
-struct CameraSet {
+struct CameraSet
+{
 
   std::vector<std::shared_ptr<Camera>> cameras;
 
@@ -104,19 +112,24 @@ struct CameraSet {
 };
 
 /// @brief handles loading and storing any data in the pipeline
-class CalibrationData {
+class CalibrationData
+{
 
 public:
   CalibrationData(const CalibrationData &) = delete;
 
   /// @brief Constructor
   /// @param data_directory a string representing the path to the directory
-  CalibrationData(const std::string_view &data_path);
+  /// @param map_x the undistoriton map
+  CalibrationData(
+    const std::string_view & data_path,
+    const cv::Mat & map_x,
+    const cv::Mat & map_y);
 
   /// @brief validates the given path'
   /// @return a path object to the data directory
   static std::filesystem::path
-  validate_data_directory(const std::string_view &data_directory);
+  validate_data_directory(const std::string_view & data_directory);
 
   /// @brief Gets the intrinsics of the camera
   /// @return camera intrinsics
@@ -124,11 +137,11 @@ public:
 
   /// @brief loads the cameras data
   /// @return a camera set containing the camera data
-  CameraSet &load_cameras();
+  CameraSet & load_cameras();
 
   /// @brief Gets the set of cameras
   /// @return a reference to the set of camera dat
-  CameraSet &get_cameras();
+  CameraSet & get_cameras();
 
   /// @brief checks if the data directory has detected featuers
   /// @return true if it contains a features directory
@@ -136,12 +149,13 @@ public:
 
   /// @brief store detected features on disk
   /// @param features the vector of detected feature regions
-  void store_features(const openMVG::features::Image_describer &describer,
-                      const std::vector<RegionsPtr> &features) const;
+  void store_features(
+    const openMVG::features::Image_describer & describer,
+    const std::vector<RegionsPtr> & features) const;
 
   /// @brief loads detected feature regions from disk
   std::vector<RegionsPtr>
-  load_features(const openMVG::features::Image_describer &describer);
+  load_features(const openMVG::features::Image_describer & describer);
 
   /// @brief gets the filesystem path to a matches file
   std::filesystem::path get_matches_path(bool raw = true);
@@ -149,19 +163,22 @@ public:
   /// @brief saves the matches
   /// @param matches the pairwise matches to save
   /// @param filtered raw or filtered matches
-  void store_matches(const openMVG::matching::PairWiseMatches &matches,
-                     bool raw = true);
+  void store_matches(
+    const openMVG::matching::PairWiseMatches & matches,
+    bool raw = true);
 
   /// @brief loads the matches if they exists from the disk
   /// @param raw raw or filtered matches
   std::optional<openMVG::matching::PairWiseMatches>
   load_matches(bool raw = true);
 
-  inline std::filesystem::path get_data_directory() { return data_directory; }
-  inline std::filesystem::path get_feature_directory() {
+  inline std::filesystem::path get_data_directory() {return data_directory;}
+  inline std::filesystem::path get_feature_directory()
+  {
     return feature_directory;
   }
-  inline std::filesystem::path get_matches_directory() {
+  inline std::filesystem::path get_matches_directory()
+  {
     return matches_directory;
   }
 
@@ -170,6 +187,8 @@ private:
   std::filesystem::path feature_directory;
   std::filesystem::path matches_directory;
   CameraSet camera_set;
+  cv::Mat map_x;
+  cv::Mat map_y;
 };
 
 /// @brief converts cameras to sfm data where the ids are aligned with those in
@@ -177,22 +196,23 @@ private:
 /// @param cameras the camera set to create the SfM data from
 /// @param intrinsics the intrinsic values to use for the cameras
 openMVG::sfm::SfM_Data cameras_to_sfm_data(
-    const CameraSet &cameras,
-    std::shared_ptr<openMVG::cameras::IntrinsicBase> intrinsics);
+  const CameraSet & cameras,
+  std::shared_ptr<openMVG::cameras::IntrinsicBase> intrinsics);
 
 openMVG::sfm::SfM_Data
-group_to_sfm_data(const CameraSet &cameras, size_t group_id,
-                  std::shared_ptr<openMVG::cameras::IntrinsicBase> intrinsics);
+group_to_sfm_data(
+  const CameraSet & cameras, size_t group_id,
+  std::shared_ptr<openMVG::cameras::IntrinsicBase> intrinsics);
 
 /// @brief Creates an sfm data instance with all of the cameras and landmarks
 /// filled out
 /// @param cameras the set of cameras
 /// @param tracks all the feature tracks
 openMVG::sfm::SfM_Data create_sfm_data(
-    const CameraSet &cameras,
-    std::shared_ptr<openMVG::cameras::IntrinsicBase> intrinsics,
-    std::shared_ptr<openMVG::sfm::Regions_Provider> regions_provider,
-    const openMVG::tracks::STLMAPTracks &tracks);
+  const CameraSet & cameras,
+  std::shared_ptr<openMVG::cameras::IntrinsicBase> intrinsics,
+  std::shared_ptr<openMVG::sfm::Regions_Provider> regions_provider,
+  const openMVG::tracks::STLMAPTracks & tracks);
 
 /// @brief Creates a new sfm data with only the data from the cameras in the
 /// passed groups
@@ -200,31 +220,25 @@ openMVG::sfm::SfM_Data create_sfm_data(
 /// @param sfm_data the sfm data to create the copy from
 /// @param groups the group ids that contain the wanted cameras
 /// @return a sfm_data object with only views from the given groups
-openMVG::sfm::SfM_Data project_to_groups(const CameraSet &cameras,
-                                         const openMVG::sfm::SfM_Data &sfm_data,
-                                         std::vector<size_t> groups);
+openMVG::sfm::SfM_Data project_to_groups(
+  const CameraSet & cameras,
+  const openMVG::sfm::SfM_Data & sfm_data,
+  std::vector<size_t> groups);
 
 /// @brief updates the sfm_data with a projections data
 /// @param sfm_data the sfm_data object to consolidate the changes into
 /// @param projection a projection of the sfm_data object to consolidate the
 /// changes into
-void update_sfm_data(openMVG::sfm::SfM_Data &sfm_data,
-                     const openMVG::sfm::SfM_Data &projection);
+void update_sfm_data(
+  openMVG::sfm::SfM_Data & sfm_data,
+  const openMVG::sfm::SfM_Data & projection);
 
 /// @brief Initializes the poses with each camera's relative pose
 /// @param camera_set the camera set to pull the poses from
 /// @param sfm_data the sfm_data to initialize the poses for
-void initialize_poses_from_group(const CameraSet &camera_set,
-                                 openMVG::sfm::SfM_Data &sfm_data);
+void initialize_poses_from_group(
+  const CameraSet & camera_set,
+  openMVG::sfm::SfM_Data & sfm_data);
 
-/// @brief Initializes the view poses by using an initial guess
-/// This initializes the poses for all views across all groups. Poses
-/// within each group have accruate transforms due to only undergoing
-/// translation. Between each group the registration is guessed via an initial
-/// hand eye guess and the robot arms motion
-/// @param camera_set the set of camera data
-/// @param sfm_data the sfm data to initialize the poses for
-void initialize_poses(CameraSet &camera_set,
-                      openMVG::sfm::SfM_Data &sfm_data);
 
 #endif

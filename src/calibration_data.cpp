@@ -27,32 +27,42 @@
 #include <sophus/average.hpp>
 #include <stdexcept>
 #include <tracks/tracks.hpp>
+#include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/imgcodecs.hpp>
 
-CalibrationData::CalibrationData(const std::string_view &data_path)
-    : data_directory{CalibrationData::validate_data_directory(data_path)} {
+CalibrationData::CalibrationData(
+  const std::string_view & data_path,
+  const cv::Mat & map_x,
+  const cv::Mat & map_y
+)
+: data_directory{CalibrationData::validate_data_directory(data_path)},
+  map_x{map_x}, map_y{map_y}
+{
   feature_directory = data_directory / "features";
   matches_directory = data_directory / "matches";
-
   load_cameras();
 }
 
 std::filesystem::path CalibrationData::validate_data_directory(
-    const std::string_view &data_directory) {
+  const std::string_view & data_directory)
+{
   std::filesystem::path directory{data_directory};
 
   if (!std::filesystem::exists(directory)) {
     throw std::invalid_argument(
-        std::format("Data directory {} does not exist", directory.string()));
+            std::format("Data directory {} does not exist", directory.string()));
   }
 
   if (!std::filesystem::is_directory(directory)) {
     throw std::invalid_argument(
-        std::format("{} is not a directory", directory.string()));
+            std::format("{} is not a directory", directory.string()));
   }
   return directory;
 }
 
-CameraSet &CalibrationData::load_cameras() {
+CameraSet & CalibrationData::load_cameras()
+{
   // load data file
   const auto data_filepath = data_directory / "data.json";
   std::ifstream data_file{data_filepath};
@@ -64,16 +74,23 @@ CameraSet &CalibrationData::load_cameras() {
   // reset internal camera_set
   camera_set = CameraSet{};
 
+
+  // created undistorted directory within data directory
+  const std::filesystem::path undistorted_directory = data_directory / "undistorted";
+  std::filesystem::create_directory(undistorted_directory);
+
   for (const auto &[group_id, camera_group_json] :
-       std::ranges::views::enumerate(data.groups)) {
+    std::ranges::views::enumerate(data.groups))
+  {
 
     camera_set.group_to_images[group_id] = {};
     std::vector<std::shared_ptr<Camera>> cameras(
-        camera_group_json.cameras.size());
+      camera_group_json.cameras.size());
 
     // load in images and convert hand poses to SE3
     for (const auto &[idx, camera_json] :
-         std::ranges::views::enumerate(camera_group_json.cameras)) {
+      std::ranges::views::enumerate(camera_group_json.cameras))
+    {
 
       cameras[idx] = std::make_shared<Camera>();
 
@@ -82,28 +99,39 @@ CameraSet &CalibrationData::load_cameras() {
       const auto image_filepath = data_directory / camera_json.image;
       if (!std::filesystem::exists(image_filepath)) {
         throw std::invalid_argument(
-            std::format("{} image does not exist. Malformed data file",
-                        image_filepath.string()));
+                std::format(
+                  "{} image does not exist. Malformed data file",
+                  image_filepath.string()));
       }
-      openMVG::image::ReadImage(image_filepath.c_str(), &cameras[idx]->image);
+
+      // load image remap and save it to the undistorted directory
+      const cv::Mat opencv_img = cv::imread(image_filepath, cv::IMREAD_COLOR);
+      cv::Mat undistorted_img;
+      cv::remap(
+        opencv_img, undistorted_img, map_x, map_y, cv::INTER_LINEAR);
+      const auto undistorted_path = undistorted_directory / image_filepath.filename();
+      cv::imwrite(undistorted_path, undistorted_img);
+
+      // load undistorted image in openMVG
+      openMVG::image::ReadImage(undistorted_path.c_str(), &cameras[idx]->image);
 
       const Eigen::AngleAxisd x_rot{camera_json.pose[3] * deg2rad,
-                                    Eigen::Vector3d::UnitX()};
+        Eigen::Vector3d::UnitX()};
 
       const Eigen::AngleAxisd y_rot{camera_json.pose[4] * deg2rad,
-                                    Eigen::Vector3d::UnitY()};
+        Eigen::Vector3d::UnitY()};
 
       const Eigen::AngleAxisd z_rot{camera_json.pose[5] * deg2rad,
-                                    Eigen::Vector3d::UnitZ()};
+        Eigen::Vector3d::UnitZ()};
 
       const Sophus::SO3d rotation{(x_rot * y_rot * z_rot).toRotationMatrix()};
 
       const Eigen::Vector3d translation{
-          camera_json.pose[0], camera_json.pose[1], camera_json.pose[2]};
+        camera_json.pose[0], camera_json.pose[1], camera_json.pose[2]};
       const Sophus::SE3d T_base_hand{rotation, translation};
 
       cameras[idx]->T_base_hand = Sophus::SE3d(rotation, translation);
-      cameras[idx]->s_Img_path = image_filepath;
+      cameras[idx]->s_Img_path = undistorted_path;
       cameras[idx]->group_id = group_id;
       cameras[idx]->id_view = camera_id++;
       cameras[idx]->ui_width = cameras[idx]->image.Width();
@@ -115,27 +143,28 @@ CameraSet &CalibrationData::load_cameras() {
 
     // get the mean hand pose of the group
     std::vector<Sophus::SE3d> hand_poses;
-    for (const auto &camera : cameras) {
+    for (const auto & camera : cameras) {
       hand_poses.push_back(camera->T_base_hand);
     }
     const Sophus::SE3d T_base_hand_average = *Sophus::average(hand_poses);
 
     // get the mean camera pose of the group
     std::vector<Sophus::SE3d> camera_poses;
-    for (const auto &camera : cameras) {
+    for (const auto & camera : cameras) {
       camera_poses.push_back(camera->T_base_hand * T_hand_camera);
-    };
+    }
     const Sophus::SE3d T_base_camerap = *Sophus::average(camera_poses);
 
     // add camera poses relative to the mean transform
-    for (auto &camera : cameras) {
+    for (auto & camera : cameras) {
       camera->pose =
-          T_base_camerap.inverse() * camera->T_base_hand * T_hand_camera;
+        T_base_camerap.inverse() * camera->T_base_hand * T_hand_camera;
     }
 
     // add cameras to camera set
-    camera_set.cameras.insert(camera_set.cameras.end(), cameras.begin(),
-                              cameras.end());
+    camera_set.cameras.insert(
+      camera_set.cameras.end(), cameras.begin(),
+      cameras.end());
     camera_set.average_T_base_hand[group_id] = T_base_hand_average;
     camera_set.average_T_base_camera[group_id] = T_base_camerap;
   }
@@ -143,55 +172,60 @@ CameraSet &CalibrationData::load_cameras() {
   return camera_set;
 }
 
-CameraSet &CalibrationData::get_cameras() { return camera_set; }
+CameraSet & CalibrationData::get_cameras() {return camera_set;}
 
-bool CalibrationData::has_features() const {
+bool CalibrationData::has_features() const
+{
   return std::filesystem::exists(feature_directory);
-};
+}
 
 void CalibrationData::store_features(
-    const openMVG::features::Image_describer &describer,
-    const std::vector<RegionsPtr> &features) const {
+  const openMVG::features::Image_describer & describer,
+  const std::vector<RegionsPtr> & features) const
+{
   // create the directory if it doesn't exist
   std::filesystem::create_directory(feature_directory);
 
-  const auto save_features = [this, &describer](const auto &pair) {
+  const auto save_features = [this, &describer](const auto & pair) {
     const std::filesystem::path img_path{
-        camera_set.cameras[std::get<0>(pair)]->s_Img_path};
+      camera_set.cameras[std::get<0>(pair)]->s_Img_path};
     const auto name = img_path.stem();
     const auto features_file =
-        feature_directory / std::format("{}.feat", name.string());
+      feature_directory / std::format("{}.feat", name.string());
     const auto descriptors_file =
-        feature_directory / std::format("{}.desc", name.string());
+      feature_directory / std::format("{}.desc", name.string());
 
     describer.Save(std::get<1>(pair).get(), features_file, descriptors_file);
   };
 
   const auto range = std::ranges::views::enumerate(features);
-  std::for_each(std::execution::par, std::ranges::begin(range),
-                std::ranges::end(range), save_features);
+  std::for_each(
+    std::execution::par, std::ranges::begin(range),
+    std::ranges::end(range), save_features);
 }
 
 std::shared_ptr<openMVG::cameras::IntrinsicBase>
-CalibrationData::get_intrinsics() const {
+CalibrationData::get_intrinsics() const
+{
   const auto intrinsics = std::make_shared<openMVG::cameras::Pinhole_Intrinsic>(
-      1920, 1080, 1381.17626953125, 973.329956054688, 532.698852539062);
+    1920, 1080, 1381.17626953125, 973.329956054688, 532.698852539062);
   return intrinsics;
 }
 
 std::vector<RegionsPtr> CalibrationData::load_features(
-    const openMVG::features::Image_describer &describer) {
+  const openMVG::features::Image_describer & describer)
+{
   openMVG::system::LoggerProgress progress_bar(camera_set.cameras.size(),
-                                               "- LOADING FEATURES -");
+    "- LOADING FEATURES -");
 
   const auto load_feature = [this, &describer, &progress_bar](
-                                const std::shared_ptr<Camera const> &camera) {
+    const std::shared_ptr<Camera const> & camera) {
     const std::filesystem::path img_path{camera->s_Img_path};
     const auto name = img_path.stem();
     const auto features_path =
-        feature_directory / std::format("{}.feat", name.string());
+      feature_directory / std::format("{}.feat", name.string());
     const auto descriptors_path =
-        feature_directory / std::format("{}.desc", name.string());
+      feature_directory / std::format("{}.desc", name.string());
 
     auto regions = describer.Allocate();
     describer.Load(regions.get(), features_path, descriptors_path);
@@ -201,31 +235,35 @@ std::vector<RegionsPtr> CalibrationData::load_features(
   };
 
   std::vector<RegionsPtr> regions(camera_set.cameras.size());
-  std::transform(std::execution::par, camera_set.cameras.begin(),
-                 camera_set.cameras.end(), regions.begin(), load_feature);
+  std::transform(
+    std::execution::par, camera_set.cameras.begin(),
+    camera_set.cameras.end(), regions.begin(), load_feature);
 
   return regions;
 }
 
-std::filesystem::path CalibrationData::get_matches_path(bool raw) {
+std::filesystem::path CalibrationData::get_matches_path(bool raw)
+{
   return matches_directory /
          std::format("matches_{}.txt", (raw) ? "raw" : "filtered");
 }
 
 void CalibrationData::store_matches(
-    const openMVG::matching::PairWiseMatches &matches, bool raw) {
+  const openMVG::matching::PairWiseMatches & matches, bool raw)
+{
   std::filesystem::create_directory(matches_directory);
   const auto pairs_path =
-      matches_directory /
-      std::format("matches_{}.txt", (raw) ? "raw" : "filtered");
+    matches_directory /
+    std::format("matches_{}.txt", (raw) ? "raw" : "filtered");
   openMVG::matching::Save(matches, pairs_path);
 }
 
 std::optional<openMVG::matching::PairWiseMatches>
-CalibrationData::load_matches(bool raw) {
+CalibrationData::load_matches(bool raw)
+{
   const auto pairs_path =
-      matches_directory /
-      std::format("matches_{}.txt", (raw) ? "raw" : "filtered");
+    matches_directory /
+    std::format("matches_{}.txt", (raw) ? "raw" : "filtered");
 
   if (std::filesystem::exists(pairs_path)) {
     std::cout << "loading matches..." << std::endl;
@@ -238,14 +276,15 @@ CalibrationData::load_matches(bool raw) {
 }
 
 openMVG::sfm::SfM_Data cameras_to_sfm_data(
-    const CameraSet &cameras,
-    std::shared_ptr<openMVG::cameras::IntrinsicBase> intrinsics) {
+  const CameraSet & cameras,
+  std::shared_ptr<openMVG::cameras::IntrinsicBase> intrinsics)
+{
 
   openMVG::sfm::SfM_Data sfm_data;
   sfm_data.intrinsics[0] = intrinsics;
 
   size_t pose_id = 0;
-  for (const auto &camera : cameras.cameras) {
+  for (const auto & camera : cameras.cameras) {
     sfm_data.views[camera->id_view] = std::make_shared<openMVG::sfm::View>();
     sfm_data.views[camera->id_view]->id_intrinsic = 0;
     sfm_data.views[camera->id_view]->id_pose = pose_id;
@@ -261,9 +300,11 @@ openMVG::sfm::SfM_Data cameras_to_sfm_data(
 }
 
 openMVG::sfm::SfM_Data
-group_to_sfm_data(const CameraSet &cameras, size_t group_id,
-                  std::shared_ptr<openMVG::cameras::IntrinsicBase> intrinsics) {
-  const auto &camera_ids = cameras.group_to_images.at(group_id);
+group_to_sfm_data(
+  const CameraSet & cameras, size_t group_id,
+  std::shared_ptr<openMVG::cameras::IntrinsicBase> intrinsics)
+{
+  const auto & camera_ids = cameras.group_to_images.at(group_id);
 
   std::cout << "creating subset" << std::endl;
 
@@ -271,15 +312,15 @@ group_to_sfm_data(const CameraSet &cameras, size_t group_id,
   subset.intrinsics[0] = intrinsics;
 
   size_t pose_id = 0;
-  for (auto &view_id : camera_ids) {
-    auto &camera = cameras.cameras.at(view_id);
+  for (auto & view_id : camera_ids) {
+    auto & camera = cameras.cameras.at(view_id);
     camera->id_intrinsic = 0;
     subset.poses[pose_id] = openMVG::geometry::Pose3(
-        camera->pose.rotationMatrix(), camera->pose.translation());
+      camera->pose.rotationMatrix(), camera->pose.translation());
     camera->id_pose = pose_id;
     subset.views[camera->id_view] = camera;
     pose_id++;
-  };
+  }
 
   std::cout << "finished creating subset" << std::endl;
 
@@ -287,16 +328,17 @@ group_to_sfm_data(const CameraSet &cameras, size_t group_id,
 }
 
 openMVG::sfm::SfM_Data create_sfm_data(
-    const CameraSet &cameras,
-    std::shared_ptr<openMVG::cameras::IntrinsicBase> intrinsics,
-    std::shared_ptr<openMVG::sfm::Regions_Provider> regions_provider,
-    const openMVG::tracks::STLMAPTracks &tracks) {
+  const CameraSet & cameras,
+  std::shared_ptr<openMVG::cameras::IntrinsicBase> intrinsics,
+  std::shared_ptr<openMVG::sfm::Regions_Provider> regions_provider,
+  const openMVG::tracks::STLMAPTracks & tracks)
+{
   openMVG::sfm::SfM_Data sfm_data;
   sfm_data.intrinsics[0] = intrinsics;
 
   // add all the cameras
   size_t pose_id = 0;
-  for (const auto &camera : cameras.cameras) {
+  for (const auto & camera : cameras.cameras) {
     camera->id_intrinsic = 0;
     sfm_data.views[camera->id_view] = camera;
     sfm_data.poses[pose_id] = openMVG::geometry::Pose3();
@@ -305,16 +347,16 @@ openMVG::sfm::SfM_Data create_sfm_data(
   }
 
   // add all the track information
-  auto &structure = sfm_data.structure;
+  auto & structure = sfm_data.structure;
   int idx(0);
-  for (const auto &tracks_it : tracks) {
+  for (const auto & tracks_it : tracks) {
     structure[idx] = {};
-    auto &obs = structure.at(idx).obs;
-    for (const auto &track_it : tracks_it.second) {
+    auto & obs = structure.at(idx).obs;
+    for (const auto & track_it : tracks_it.second) {
       const auto imaIndex = track_it.first;
       const auto featIndex = track_it.second;
-      const auto &pt =
-          regions_provider->get(imaIndex)->GetRegionPosition(featIndex);
+      const auto & pt =
+        regions_provider->get(imaIndex)->GetRegionPosition(featIndex);
       obs[imaIndex] = {pt, featIndex};
     }
     ++idx;
@@ -323,22 +365,24 @@ openMVG::sfm::SfM_Data create_sfm_data(
   return sfm_data;
 }
 
-openMVG::sfm::SfM_Data project_to_groups(const CameraSet &cameras,
-                                         const openMVG::sfm::SfM_Data &sfm_data,
-                                         std::vector<size_t> groups) {
+openMVG::sfm::SfM_Data project_to_groups(
+  const CameraSet & cameras,
+  const openMVG::sfm::SfM_Data & sfm_data,
+  std::vector<size_t> groups)
+{
   openMVG::sfm::SfM_Data projection;
   projection.intrinsics[0] = sfm_data.intrinsics.at(0);
 
   // get all the camera ids
   std::set<size_t> view_ids;
-  for (const auto &group_id : groups) {
-    const auto &group_views = cameras.group_to_images.at(group_id);
+  for (const auto & group_id : groups) {
+    const auto & group_views = cameras.group_to_images.at(group_id);
     view_ids.insert(group_views.begin(), group_views.end());
   }
 
   /// copy the views and poses over
-  for (const auto &id_view : view_ids) {
-    const auto &view = sfm_data.views.at(id_view);
+  for (const auto & id_view : view_ids) {
+    const auto & view = sfm_data.views.at(id_view);
     projection.views[id_view] = view;
     projection.poses[view->id_pose] = sfm_data.poses.at(view->id_pose);
   }
@@ -362,8 +406,10 @@ openMVG::sfm::SfM_Data project_to_groups(const CameraSet &cameras,
   return projection;
 }
 
-void update_sfm_data(openMVG::sfm::SfM_Data &sfm_data,
-                     const openMVG::sfm::SfM_Data &projection) {
+void update_sfm_data(
+  openMVG::sfm::SfM_Data & sfm_data,
+  const openMVG::sfm::SfM_Data & projection)
+{
   // update view poses
   for (const auto &[id_view, view] : projection.views) {
     sfm_data.poses.at(view->id_pose) = projection.poses.at(view->id_pose);
@@ -375,43 +421,13 @@ void update_sfm_data(openMVG::sfm::SfM_Data &sfm_data,
   }
 }
 
-void initialize_poses_from_group(const CameraSet &camera_set,
-                                 openMVG::sfm::SfM_Data &sfm_data) {
+void initialize_poses_from_group(
+  const CameraSet & camera_set,
+  openMVG::sfm::SfM_Data & sfm_data)
+{
   for (const auto &[id, view] : sfm_data.views) {
     const Sophus::SE3d pose = camera_set.cameras.at(id)->pose;
     sfm_data.poses[view->id_pose] =
-        openMVG::geometry::Pose3(pose.rotationMatrix(), pose.translation());
+      openMVG::geometry::Pose3(pose.rotationMatrix(), pose.translation());
   }
-}
-
-void initialize_poses(CameraSet &camera_set,
-                      openMVG::sfm::SfM_Data &sfm_data) {
-  for (const auto &[id, view] : sfm_data.views) {
-    const auto &group_id = camera_set.image_to_group.at(id);
-
-    const Sophus::SE3d pose =
-        (camera_set.cameras.at(id)->T_base_hand * T_hand_camera);
-
-    sfm_data.poses[view->id_pose] = se3_to_pose3(pose);
-  }
-
-  // first group is the origin
-  // const Sophus::SE3d T_base_origin = camera_set.average_T_base_camera.at(0);
-  
-  // for (const auto& [group_id, camera_ids]: camera_set.group_to_images) {
-    
-  //   // set the groups pose relative to the origin
-  //   const Sophus::SE3d T_origin_group = T_base_origin.inverse() * camera_set.average_T_base_camera.at(group_id);
-    
-  //   std::cout << T_origin_group.matrix() << std::endl;
-  //   camera_set.group_pose[group_id] = T_origin_group;
-
-  //   for (const auto& camera_id: camera_ids) {
-  //     // set up each cameras pose
-  //     // each camera is relative to their group
-  //     const Sophus::SE3d T_origin_camera = T_origin_group * camera_set.cameras.at(camera_id)->pose;
-  //     sfm_data.poses[sfm_data.views[camera_id]->id_pose] = se3_to_pose3(T_origin_camera);
-  //   }
-  // }
-
 }
