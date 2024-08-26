@@ -32,12 +32,9 @@
 #include <opencv2/imgcodecs.hpp>
 
 CalibrationData::CalibrationData(
-  const std::string_view & data_path,
-  const cv::Mat & map_x,
-  const cv::Mat & map_y
+  const std::string_view & data_path
 )
-: data_directory{CalibrationData::validate_data_directory(data_path)},
-  map_x{map_x}, map_y{map_y}
+: data_directory{CalibrationData::validate_data_directory(data_path)}
 {
   feature_directory = data_directory / "features";
   matches_directory = data_directory / "matches";
@@ -104,16 +101,8 @@ CameraSet & CalibrationData::load_cameras()
                   image_filepath.string()));
       }
 
-      // load image remap and save it to the undistorted directory
-      const cv::Mat opencv_img = cv::imread(image_filepath, cv::IMREAD_COLOR);
-      cv::Mat undistorted_img;
-      cv::remap(
-        opencv_img, undistorted_img, map_x, map_y, cv::INTER_LINEAR);
-      const auto undistorted_path = undistorted_directory / image_filepath.filename();
-      cv::imwrite(undistorted_path, undistorted_img);
-
       // load undistorted image in openMVG
-      openMVG::image::ReadImage(undistorted_path.c_str(), &cameras[idx]->image);
+      openMVG::image::ReadImage(image_filepath.c_str(), &cameras[idx]->image);
 
       const Eigen::AngleAxisd x_rot{camera_json.pose[3] * deg2rad,
         Eigen::Vector3d::UnitX()};
@@ -131,7 +120,7 @@ CameraSet & CalibrationData::load_cameras()
       const Sophus::SE3d T_base_hand{rotation, translation};
 
       cameras[idx]->T_base_hand = Sophus::SE3d(rotation, translation);
-      cameras[idx]->s_Img_path = undistorted_path;
+      cameras[idx]->s_Img_path = image_filepath;
       cameras[idx]->group_id = group_id;
       cameras[idx]->id_view = camera_id++;
       cameras[idx]->ui_width = cameras[idx]->image.Width();
@@ -202,14 +191,6 @@ void CalibrationData::store_features(
   std::for_each(
     std::execution::par, std::ranges::begin(range),
     std::ranges::end(range), save_features);
-}
-
-std::shared_ptr<openMVG::cameras::IntrinsicBase>
-CalibrationData::get_intrinsics() const
-{
-  const auto intrinsics = std::make_shared<openMVG::cameras::Pinhole_Intrinsic>(
-    1920, 1080, 1381.17626953125, 973.329956054688, 532.698852539062);
-  return intrinsics;
 }
 
 std::vector<RegionsPtr> CalibrationData::load_features(

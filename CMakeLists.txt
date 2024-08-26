@@ -6,7 +6,6 @@ find_package(Sophus REQUIRED)
 find_package(OpenMVG REQUIRED)
 find_package(nlohmann_json REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs) 
-find_library(MRCAL_LIB mrcal HINTS /usr/lib/x86_64-linux-gnu)
 
 
 
@@ -33,7 +32,6 @@ target_link_libraries(calibrate
                               OpenMVG::openMVG_sfm
                               OpenMVG::openMVG_system
                               Ceres::ceres
-                              ${MRCAL_LIB}
                               opencv_core 
                               opencv_imgproc
                               opencv_imgcodecs)

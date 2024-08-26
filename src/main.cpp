@@ -70,21 +70,14 @@ void GetCameraPositions(
 
 int main(int argc, char ** argv)
 {
-
   Eigen::Matrix3d intrinsics;
-  intrinsics << 1381.17626953125, 0, 973.329956054688, 0, 1381.80151367188,
-    532.698852539062, 0, 0, 1;
+  intrinsics << std::stod(argv[2]), 0, std::stod(argv[3]), 0, std::stod(argv[4]),
+    std::stod(argv[5]), 0, 0, 1;
 
-  // load mrcal models
-  auto rich_model = std::unique_ptr<mrcal_cameramodel_t>(
-    mrcal_read_cameramodel_file(argv[2]));
+  const auto intrinsics_openmvg = std::make_shared<openMVG::cameras::Pinhole_Intrinsic>(
+    1920, 1080, std::stod(argv[2]), std::stod(argv[3]), std::stod(argv[5]));
 
-  auto lean_model = std::unique_ptr<mrcal_cameramodel_t>(
-    mrcal_read_cameramodel_file(argv[3]));
-
-  const auto & [map_x, map_y] = create_mrcal_reprojection_map(*rich_model, *lean_model);
-
-  auto calibration_data = CalibrationData{argv[1], map_x, map_y};
+  auto calibration_data = CalibrationData{argv[1]};
   auto camera_set = calibration_data.get_cameras();
 
   auto image_describer = create_image_describer("SIFT");
@@ -97,7 +90,7 @@ int main(int argc, char ** argv)
   }
 
   auto pre_sfm_data =
-    cameras_to_sfm_data(camera_set, calibration_data.get_intrinsics());
+    cameras_to_sfm_data(camera_set, intrinsics_openmvg);
 
   const auto regions = [&calibration_data, &image_describer, &pre_sfm_data]() {
     if (!calibration_data.has_features()) {
@@ -260,6 +253,13 @@ int main(int argc, char ** argv)
     4.0, 2, 2, openMVG::ETriangulationMethod::INVERSE_DEPTH_WEIGHTED_MIDPOINT, true);
   est.triangulate(sfm_data);
 
+  std::vector<openMVG::Vec3> points, track_colors, camera_positions;
+  if (openMVG::sfm::ColorizeTracks(sfm_data, points, track_colors)) {
+    GetCameraPositions(sfm_data, camera_positions);
+    openMVG::plyHelper::exportToPly(
+      points, camera_positions, "./cloud.ply",
+      &track_colors);
+  }
 
   Sophus::SE3d T_hand_eye = calibrate_hand_eye(
     sfm_data,
@@ -306,25 +306,6 @@ int main(int argc, char ** argv)
     sfm_data,
     T_hand_eye
   );
-
-  // bundle adjust again
-  // openMVG::sfm::Bundle_Adjustment_Ceres::BA_Ceres_options options;
-  // options.linear_solver_type_ = ceres::SPARSE_SCHUR;
-  // openMVG::sfm::Bundle_Adjustment_Ceres ba(options);
-  // ba.Adjust(sfm_data,
-  //           openMVG::sfm::Optimize_Options(
-  //               openMVG::cameras::Intrinsic_Parameter_Type::NONE,
-  //               openMVG::sfm::Extrinsic_Parameter_Type::NONE,
-  //               openMVG::sfm::Structure_Parameter_Type::ADJUST_ALL));
-
-  std::vector<openMVG::Vec3> points, track_colors, camera_positions;
-  if (openMVG::sfm::ColorizeTracks(sfm_data, points, track_colors)) {
-    GetCameraPositions(sfm_data, camera_positions);
-    openMVG::plyHelper::exportToPly(
-      points, camera_positions, "./cloud.ply",
-      &track_colors);
-  }
-
 
   return 1;
 }

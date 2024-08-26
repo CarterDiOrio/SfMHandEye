@@ -122,18 +122,12 @@ public:
   /// @param data_directory a string representing the path to the directory
   /// @param map_x the undistoriton map
   CalibrationData(
-    const std::string_view & data_path,
-    const cv::Mat & map_x,
-    const cv::Mat & map_y);
+    const std::string_view & data_path);
 
   /// @brief validates the given path'
   /// @return a path object to the data directory
   static std::filesystem::path
   validate_data_directory(const std::string_view & data_directory);
-
-  /// @brief Gets the intrinsics of the camera
-  /// @return camera intrinsics
-  std::shared_ptr<openMVG::cameras::IntrinsicBase> get_intrinsics() const;
 
   /// @brief loads the cameras data
   /// @return a camera set containing the camera data
@@ -187,8 +181,6 @@ private:
   std::filesystem::path feature_directory;
   std::filesystem::path matches_directory;
   CameraSet camera_set;
-  cv::Mat map_x;
-  cv::Mat map_y;
 };
 
 /// @brief converts cameras to sfm data where the ids are aligned with those in

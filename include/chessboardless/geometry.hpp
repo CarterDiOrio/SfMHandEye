@@ -9,10 +9,6 @@
 #include <sophus/se3.hpp>
 #include <tracks/tracks.hpp>
 #include <opencv2/imgproc.hpp>
-extern "C" {
-  #include <mrcal/mrcal.h>
-  #include <mrcal/mrcal-types.h>
-}
 
 /// @brief converts SE3 to OpenMVG pose3
 /// @param T_world_camera the se3 transformation
@@ -42,13 +38,6 @@ Sophus::SE3<T> pose3_to_se3(const openMVG::geometry::Pose3 & pose3)
   const Sophus::SE3<T> T_camera_world = Sophus::SE3<T>(rotation, translation);
   return T_camera_world.inverse();
 }
-
-/// @brief Creates the x and y reprojection maps from rich to lean mrcal model
-/// @param from the rich model to convert from
-/// @param to the lean model to convert to
-std::pair<cv::Mat, cv::Mat> create_mrcal_reprojection_map(
-  const mrcal_cameramodel_t & from,
-  const mrcal_cameramodel_t & to);
 
 /// @brief Performs hand eye calibration using SfM
 /// AX = XB non linear optimization
